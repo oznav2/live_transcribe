@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  transcription-app:
+    build: .
+    container_name: live-transcription
+    ports:
+      - "8000:8000"
+    environment:
+      # Whisper model size: tiny, base, small, medium, large
+      # Smaller = faster but less accurate, Larger = slower but more accurate
+      - WHISPER_MODEL=base
+      - PORT=8000
+    volumes:
+      # Cache Whisper models to avoid re-downloading
+      - whisper-models:/root/.cache/whisper
+      # Optional: Mount logs directory
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  whisper-models:
+    driver: local

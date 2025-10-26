@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Audio Stream Transcription</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .transcription-box {
+            min-height: 400px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        
+        .transcription-text {
+            animation: fadeIn 0.3s ease-in;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        
+        .status-idle { background-color: #9ca3af; }
+        .status-connecting { background-color: #fbbf24; animation: pulse 1.5s infinite; }
+        .status-active { background-color: #10b981; animation: pulse 2s infinite; }
+        .status-error { background-color: #ef4444; }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .sample-url {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .sample-url:hover {
+            transform: translateX(5px);
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-gray-900 via-blue-900 to-gray-900 min-h-screen text-white">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-5xl font-bold mb-3 bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+                <i class="fas fa-wave-square mr-3"></i>
+                Live Stream Transcription
+            </h1>
+            <p class="text-gray-300 text-lg">
+                Real-time audio transcription powered by Whisper AI
+            </p>
+        </div>
+
+        <!-- Main Content -->
+        <div class="max-w-6xl mx-auto">
+            <!-- Input Section -->
+            <div class="bg-gray-800 rounded-xl shadow-2xl p-6 mb-6 border border-gray-700">
+                <div class="mb-4">
+                    <label class="block text-sm font-semibold text-gray-300 mb-2">
+                        <i class="fas fa-link mr-2"></i>
+                        Audio/Video Stream URL
+                    </label>
+                    <div class="flex gap-2">
+                        <input 
+                            type="text" 
+                            id="urlInput" 
+                            placeholder="Enter m3u8, video, or audio URL..."
+                            class="flex-1 px-4 py-3 bg-gray-900 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-gray-500"
+                        >
+                        <button 
+                            id="startBtn"
+                            class="px-8 py-3 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 rounded-lg font-semibold transition-all duration-200 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                            <i class="fas fa-play mr-2"></i>
+                            Start Transcription
+                        </button>
+                        <button 
+                            id="stopBtn"
+                            class="px-8 py-3 bg-red-600 hover:bg-red-700 rounded-lg font-semibold transition-all duration-200 transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-red-500 hidden"
+                        >
+                            <i class="fas fa-stop mr-2"></i>
+                            Stop
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Language Selection -->
+                <div class="mb-4">
+                    <label class="block text-sm font-semibold text-gray-300 mb-2">
+                        <i class="fas fa-language mr-2"></i>
+                        Language (Optional)
+                    </label>
+                    <select 
+                        id="languageSelect"
+                        class="w-full px-4 py-3 bg-gray-900 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
+                    >
+                        <option value="">Auto-detect</option>
+                        <option value="en">English</option>
+                        <option value="es">Spanish</option>
+                        <option value="fr">French</option>
+                        <option value="de">German</option>
+                        <option value="it">Italian</option>
+                        <option value="pt">Portuguese</option>
+                        <option value="ru">Russian</option>
+                        <option value="ja">Japanese</option>
+                        <option value="ko">Korean</option>
+                        <option value="zh">Chinese</option>
+                        <option value="ar">Arabic</option>
+                        <option value="hi">Hindi</option>
+                    </select>
+                </div>
+
+                <!-- Sample URLs -->
+                <div class="mt-4">
+                    <details class="cursor-pointer">
+                        <summary class="text-sm font-semibold text-gray-400 hover:text-gray-300 mb-2">
+                            <i class="fas fa-info-circle mr-2"></i>
+                            Sample URLs (Click to expand)
+                        </summary>
+                        <div class="mt-2 space-y-2 text-sm">
+                            <div class="sample-url bg-gray-900 p-3 rounded border-l-4 border-blue-500 hover:bg-gray-700" onclick="useSampleUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ')">
+                                <div class="font-semibold text-blue-400">YouTube Video</div>
+                                <div class="text-gray-400 text-xs mt-1">https://www.youtube.com/watch?v=...</div>
+                            </div>
+                            <div class="sample-url bg-gray-900 p-3 rounded border-l-4 border-purple-500 hover:bg-gray-700" onclick="useSampleUrl('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3')">
+                                <div class="font-semibold text-purple-400">Direct MP3 Audio</div>
+                                <div class="text-gray-400 text-xs mt-1">https://www.soundhelix.com/examples/mp3/...</div>
+                            </div>
+                            <div class="sample-url bg-gray-900 p-3 rounded border-l-4 border-green-500 hover:bg-gray-700" onclick="useSampleUrl('https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8')">
+                                <div class="font-semibold text-green-400">HLS Stream (m3u8)</div>
+                                <div class="text-gray-400 text-xs mt-1">https://test-streams.mux.dev/.../file.m3u8</div>
+                            </div>
+                        </div>
+                    </details>
+                </div>
+            </div>
+
+            <!-- Status Section -->
+            <div class="bg-gray-800 rounded-xl shadow-2xl p-4 mb-6 border border-gray-700">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center">
+                        <span id="statusIndicator" class="status-indicator status-idle"></span>
+                        <span id="statusText" class="font-semibold">Idle - Ready to transcribe</span>
+                    </div>
+                    <div class="flex gap-4">
+                        <button 
+                            id="clearBtn"
+                            class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-semibold transition-all"
+                        >
+                            <i class="fas fa-trash mr-2"></i>
+                            Clear
+                        </button>
+                        <button 
+                            id="copyBtn"
+                            class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-semibold transition-all"
+                        >
+                            <i class="fas fa-copy mr-2"></i>
+                            Copy Text
+                        </button>
+                        <button 
+                            id="downloadBtn"
+                            class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm font-semibold transition-all"
+                        >
+                            <i class="fas fa-download mr-2"></i>
+                            Download
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Transcription Output -->
+            <div class="bg-gray-800 rounded-xl shadow-2xl p-6 border border-gray-700">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-2xl font-bold">
+                        <i class="fas fa-closed-captioning mr-2 text-blue-400"></i>
+                        Live Transcription
+                    </h2>
+                    <div id="wordCount" class="text-gray-400 text-sm">
+                        0 words
+                    </div>
+                </div>
+                <div 
+                    id="transcriptionBox" 
+                    class="transcription-box bg-gray-900 rounded-lg p-6 border border-gray-700 font-mono text-base leading-relaxed"
+                >
+                    <div class="text-gray-500 text-center py-20">
+                        <i class="fas fa-microphone text-6xl mb-4 opacity-50"></i>
+                        <p>Transcription will appear here...</p>
+                        <p class="text-sm mt-2">Enter a URL and click "Start Transcription"</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="text-center mt-8 text-gray-400 text-sm">
+            <p>
+                <i class="fas fa-brain mr-2"></i>
+                Powered by OpenAI Whisper | 
+                <i class="fas fa-code ml-2 mr-2"></i>
+                Built with FastAPI & WebSockets
+            </p>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let transcriptionText = '';
+
+        const urlInput = document.getElementById('urlInput');
+        const languageSelect = document.getElementById('languageSelect');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const copyBtn = document.getElementById('copyBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const transcriptionBox = document.getElementById('transcriptionBox');
+        const wordCount = document.getElementById('wordCount');
+
+        function useSampleUrl(url) {
+            urlInput.value = url;
+        }
+
+        function updateStatus(status, message) {
+            statusIndicator.className = `status-indicator status-${status}`;
+            statusText.textContent = message;
+        }
+
+        function updateWordCount() {
+            const words = transcriptionText.trim().split(/\s+/).filter(w => w.length > 0).length;
+            wordCount.textContent = `${words} word${words !== 1 ? 's' : ''}`;
+        }
+
+        function addTranscription(text) {
+            if (!text.trim()) return;
+            
+            transcriptionText += (transcriptionText ? ' ' : '') + text;
+            
+            const p = document.createElement('p');
+            p.className = 'transcription-text mb-3 text-gray-100';
+            p.textContent = text;
+            
+            if (transcriptionBox.querySelector('.text-gray-500')) {
+                transcriptionBox.innerHTML = '';
+            }
+            
+            transcriptionBox.appendChild(p);
+            transcriptionBox.scrollTop = transcriptionBox.scrollHeight;
+            
+            updateWordCount();
+        }
+
+        function startTranscription() {
+            const url = urlInput.value.trim();
+            if (!url) {
+                alert('Please enter a valid URL');
+                return;
+            }
+
+            const language = languageSelect.value || null;
+
+            // Create WebSocket connection
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/transcribe`);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                updateStatus('connecting', 'Connecting to stream...');
+                
+                // Send transcription request
+                ws.send(JSON.stringify({ url, language }));
+                
+                startBtn.classList.add('hidden');
+                stopBtn.classList.remove('hidden');
+                urlInput.disabled = true;
+                languageSelect.disabled = true;
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('Received:', data);
+
+                if (data.type === 'status') {
+                    updateStatus('connecting', data.message);
+                } else if (data.type === 'transcription') {
+                    updateStatus('active', 'Transcribing...');
+                    addTranscription(data.text);
+                } else if (data.type === 'complete') {
+                    updateStatus('idle', 'Transcription complete');
+                    stopTranscription();
+                } else if (data.error) {
+                    updateStatus('error', `Error: ${data.error}`);
+                    alert(`Error: ${data.error}`);
+                    stopTranscription();
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                updateStatus('error', 'Connection error');
+                alert('Connection error. Please try again.');
+                stopTranscription();
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket closed');
+                if (statusIndicator.classList.contains('status-active') || 
+                    statusIndicator.classList.contains('status-connecting')) {
+                    updateStatus('idle', 'Connection closed');
+                }
+                stopTranscription();
+            };
+        }
+
+        function stopTranscription() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+            
+            startBtn.classList.remove('hidden');
+            stopBtn.classList.add('hidden');
+            urlInput.disabled = false;
+            languageSelect.disabled = false;
+        }
+
+        function clearTranscription() {
+            transcriptionText = '';
+            transcriptionBox.innerHTML = `
+                <div class="text-gray-500 text-center py-20">
+                    <i class="fas fa-microphone text-6xl mb-4 opacity-50"></i>
+                    <p>Transcription will appear here...</p>
+                    <p class="text-sm mt-2">Enter a URL and click "Start Transcription"</p>
+                </div>
+            `;
+            updateWordCount();
+        }
+
+        function copyToClipboard() {
+            if (!transcriptionText.trim()) {
+                alert('No transcription to copy');
+                return;
+            }
+            
+            navigator.clipboard.writeText(transcriptionText).then(() => {
+                const originalText = copyBtn.innerHTML;
+                copyBtn.innerHTML = '<i class="fas fa-check mr-2"></i>Copied!';
+                copyBtn.classList.add('bg-green-600');
+                
+                setTimeout(() => {
+                    copyBtn.innerHTML = originalText;
+                    copyBtn.classList.remove('bg-green-600');
+                }, 2000);
+            }).catch(err => {
+                alert('Failed to copy text');
+            });
+        }
+
+        function downloadTranscription() {
+            if (!transcriptionText.trim()) {
+                alert('No transcription to download');
+                return;
+            }
+            
+            const blob = new Blob([transcriptionText], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `transcription_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // Event listeners
+        startBtn.addEventListener('click', startTranscription);
+        stopBtn.addEventListener('click', stopTranscription);
+        clearBtn.addEventListener('click', clearTranscription);
+        copyBtn.addEventListener('click', copyToClipboard);
+        downloadBtn.addEventListener('click', downloadTranscription);
+
+        // Allow Enter key to start transcription
+        urlInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !startBtn.classList.contains('hidden')) {
+                startTranscription();
+            }
+        });
+    </script>
+</body>
+</html>

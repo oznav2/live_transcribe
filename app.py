@@ -1,0 +1,296 @@
+"""
+Live Audio Streaming Transcription Application
+Inspired by Vibe - Uses FFmpeg + Whisper for real-time transcription
+"""
+import asyncio
+import logging
+import os
+import subprocess
+import tempfile
+import threading
+import queue
+from pathlib import Path
+from typing import Optional
+
+import whisper
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, HttpUrl
+import uvicorn
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Initialize FastAPI app
+app = FastAPI(title="Live Transcription Service", version="1.0.0")
+
+# Global Whisper model
+whisper_model: Optional[whisper.Whisper] = None
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "base")  # tiny, base, small, medium, large
+
+# Audio processing configuration
+CHUNK_DURATION = 5  # seconds - process audio in 5-second chunks
+SAMPLE_RATE = 16000  # Whisper expects 16kHz audio
+CHANNELS = 1  # Mono audio
+
+
+class TranscriptionRequest(BaseModel):
+    url: str
+    language: Optional[str] = None
+
+
+class AudioStreamProcessor:
+    """Processes audio streams from URLs using FFmpeg and transcribes with Whisper"""
+    
+    def __init__(self, url: str, language: Optional[str] = None):
+        self.url = url
+        self.language = language
+        self.is_running = False
+        self.audio_queue = queue.Queue(maxsize=10)
+        self.ffmpeg_process: Optional[subprocess.Popen] = None
+        
+    def start_ffmpeg_stream(self):
+        """Start FFmpeg process to stream audio from URL"""
+        try:
+            # FFmpeg command to extract audio and convert to PCM WAV format
+            # This works with m3u8, direct video URLs, and audio URLs
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-i', self.url,           # Input URL
+                '-f', 's16le',             # PCM signed 16-bit little-endian
+                '-acodec', 'pcm_s16le',    # Audio codec
+                '-ar', str(SAMPLE_RATE),   # Sample rate 16kHz
+                '-ac', str(CHANNELS),      # Mono audio
+                '-loglevel', 'error',      # Only show errors
+                'pipe:1'                   # Output to stdout
+            ]
+            
+            logger.info(f"Starting FFmpeg stream for URL: {self.url}")
+            self.ffmpeg_process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=10**8
+            )
+            
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start FFmpeg: {e}")
+            return False
+    
+    def read_audio_chunks(self):
+        """Read audio data from FFmpeg in chunks"""
+        if not self.ffmpeg_process:
+            return
+        
+        # Calculate chunk size: CHUNK_DURATION seconds of audio
+        chunk_size = int(SAMPLE_RATE * CHANNELS * 2 * CHUNK_DURATION)  # 2 bytes per sample
+        
+        try:
+            while self.is_running:
+                audio_data = self.ffmpeg_process.stdout.read(chunk_size)
+                
+                if not audio_data:
+                    logger.info("FFmpeg stream ended")
+                    break
+                
+                # Put audio chunk in queue for processing
+                try:
+                    self.audio_queue.put(audio_data, timeout=1)
+                except queue.Full:
+                    logger.warning("Audio queue full, skipping chunk")
+                    
+        except Exception as e:
+            logger.error(f"Error reading audio chunks: {e}")
+        finally:
+            self.is_running = False
+    
+    def stop(self):
+        """Stop the audio streaming and cleanup"""
+        self.is_running = False
+        
+        if self.ffmpeg_process:
+            try:
+                self.ffmpeg_process.terminate()
+                self.ffmpeg_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.ffmpeg_process.kill()
+            except Exception as e:
+                logger.error(f"Error stopping FFmpeg: {e}")
+
+
+async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamProcessor):
+    """Transcribe audio chunks and send results via WebSocket"""
+    global whisper_model
+    
+    if whisper_model is None:
+        await websocket.send_json({"error": "Whisper model not loaded"})
+        return
+    
+    try:
+        while processor.is_running or not processor.audio_queue.empty():
+            try:
+                # Get audio chunk from queue (with timeout)
+                audio_data = processor.audio_queue.get(timeout=1)
+                
+                # Save chunk to temporary WAV file for Whisper
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                    temp_path = temp_audio.name
+                    
+                    # Write WAV header + audio data
+                    import wave
+                    with wave.open(temp_path, 'wb') as wav_file:
+                        wav_file.setnchannels(CHANNELS)
+                        wav_file.setsampwidth(2)  # 16-bit
+                        wav_file.setframerate(SAMPLE_RATE)
+                        wav_file.writeframes(audio_data)
+                
+                try:
+                    # Transcribe audio chunk
+                    logger.info(f"Transcribing audio chunk ({len(audio_data)} bytes)")
+                    result = whisper_model.transcribe(
+                        temp_path,
+                        language=processor.language,
+                        fp16=False,  # CPU compatibility
+                        verbose=False
+                    )
+                    
+                    # Send transcription to client
+                    transcription_text = result.get('text', '').strip()
+                    if transcription_text:
+                        await websocket.send_json({
+                            "type": "transcription",
+                            "text": transcription_text,
+                            "language": result.get('language', 'unknown')
+                        })
+                        logger.info(f"Sent transcription: {transcription_text[:100]}...")
+                    
+                finally:
+                    # Cleanup temp file
+                    try:
+                        os.unlink(temp_path)
+                    except:
+                        pass
+                        
+            except queue.Empty:
+                # No audio data available, continue waiting
+                await asyncio.sleep(0.1)
+                continue
+            except Exception as e:
+                logger.error(f"Error transcribing chunk: {e}")
+                await websocket.send_json({"error": str(e)})
+                
+        # Stream finished
+        await websocket.send_json({"type": "complete", "message": "Transcription complete"})
+        logger.info("Transcription stream completed")
+        
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected")
+    except Exception as e:
+        logger.error(f"Transcription error: {e}")
+        await websocket.send_json({"error": str(e)})
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Load Whisper model on startup"""
+    global whisper_model
+    
+    logger.info(f"Loading Whisper model: {MODEL_SIZE}")
+    try:
+        whisper_model = whisper.load_model(MODEL_SIZE)
+        logger.info(f"Whisper model '{MODEL_SIZE}' loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load Whisper model: {e}")
+        raise
+
+
+@app.get("/", response_class=HTMLResponse)
+async def get_home():
+    """Serve the main web interface"""
+    with open("static/index.html", "r") as f:
+        return HTMLResponse(content=f.read())
+
+
+@app.websocket("/ws/transcribe")
+async def websocket_transcribe(websocket: WebSocket):
+    """WebSocket endpoint for live transcription"""
+    await websocket.accept()
+    processor = None
+    audio_thread = None
+    
+    try:
+        # Receive transcription request
+        data = await websocket.receive_json()
+        url = data.get("url")
+        language = data.get("language")
+        
+        if not url:
+            await websocket.send_json({"error": "URL is required"})
+            return
+        
+        logger.info(f"Starting transcription for URL: {url}")
+        await websocket.send_json({"type": "status", "message": "Starting audio stream..."})
+        
+        # Create audio processor
+        processor = AudioStreamProcessor(url, language)
+        
+        # Start FFmpeg stream
+        if not processor.start_ffmpeg_stream():
+            await websocket.send_json({"error": "Failed to start audio stream"})
+            return
+        
+        processor.is_running = True
+        
+        # Start audio reading thread
+        audio_thread = threading.Thread(target=processor.read_audio_chunks, daemon=True)
+        audio_thread.start()
+        
+        await websocket.send_json({"type": "status", "message": "Stream started, transcribing..."})
+        
+        # Start transcription
+        await transcribe_audio_stream(websocket, processor)
+        
+    except WebSocketDisconnect:
+        logger.info("Client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        try:
+            await websocket.send_json({"error": str(e)})
+        except:
+            pass
+    finally:
+        # Cleanup
+        if processor:
+            processor.stop()
+        if audio_thread and audio_thread.is_alive():
+            audio_thread.join(timeout=5)
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "whisper_model": MODEL_SIZE,
+        "model_loaded": whisper_model is not None
+    }
+
+
+if __name__ == "__main__":
+    # Create static directory if it doesn't exist
+    Path("static").mkdir(exist_ok=True)
+    
+    # Run the server
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=port,
+        log_level="info"
+    )
