@@ -28,7 +28,17 @@ git clone <your-repo-url>
 cd webapp
 ```
 
-### 2. Build and Run
+### 2. Quick Start Script (Recommended)
+
+```bash
+# Make start script executable (if not already)
+chmod +x start.sh
+
+# Run quick start
+./start.sh
+```
+
+### 2. Manual Build and Run
 
 ```bash
 # Build and start the container
@@ -44,6 +54,12 @@ Open your browser and navigate to:
 ```
 http://localhost:8000
 ```
+
+## 📚 Documentation
+
+- **[API Documentation](API.md)**: Complete WebSocket and REST API reference
+- **[Deployment Guide](DEPLOYMENT.md)**: Deploy to various cloud platforms
+- **[Contributing](CONTRIBUTING.md)**: Guidelines for contributors
 
 ## 🎯 How to Use
 
@@ -125,15 +141,20 @@ Access at: `http://localhost:8000`
 
 ```
 webapp/
-├── app.py                 # Main FastAPI application
+├── app.py                 # Main FastAPI application with WebSocket support
 ├── static/
-│   └── index.html        # Web interface
+│   └── index.html        # Beautiful web interface with real-time updates
 ├── requirements.txt      # Python dependencies
-├── Dockerfile           # Docker image configuration
-├── docker-compose.yml   # Docker Compose setup
+├── Dockerfile           # Optimized Docker image configuration
+├── docker-compose.yml   # Docker Compose setup with volume management
+├── start.sh            # Quick start script
+├── test_setup.py       # Environment validation script
 ├── .env.example        # Environment variables template
 ├── .gitignore          # Git ignore rules
-└── README.md           # This file
+├── README.md           # This file
+├── API.md              # Complete API documentation
+├── DEPLOYMENT.md       # Detailed deployment guide
+└── CONTRIBUTING.md     # Contribution guidelines
 ```
 
 ## 🔧 Advanced Configuration
