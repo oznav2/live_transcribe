@@ -11,8 +11,15 @@ import threading
 import queue
 from pathlib import Path
 from typing import Optional
+from contextlib import asynccontextmanager
 
 import whisper
+try:
+    from whispercpp import Whisper as WhisperCpp
+    WHISPER_CPP_AVAILABLE = True
+except ImportError:
+    WHISPER_CPP_AVAILABLE = False
+    WhisperCpp = None
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,17 +33,74 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
-app = FastAPI(title="Live Transcription Service", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for startup and shutdown"""
+    # Startup
+    try:
+        logger.info(f"Loading Whisper model: {MODEL_SIZE}")
+        load_model(MODEL_SIZE)
+        logger.info("Default Whisper model loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load default Whisper model: {e}")
+        raise
+    
+    yield
+    
+    # Shutdown (if needed)
+    logger.info("Application shutting down")
 
-# Global Whisper model
-whisper_model: Optional[whisper.Whisper] = None
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "base")  # tiny, base, small, medium, large
+# Initialize FastAPI app with lifespan
+app = FastAPI(title="Live Transcription Service", version="1.0.0", lifespan=lifespan)
+
+# Global Whisper models
+whisper_models = {}
+current_model = None
+current_model_name = None
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "ivrit-large-v3-turbo")  # Default to Ivrit Hebrew model
+
+# Model configurations
+MODEL_CONFIGS = {
+    "tiny": {"type": "openai", "name": "tiny"},
+    "base": {"type": "openai", "name": "base"},
+    "small": {"type": "openai", "name": "small"},
+    "medium": {"type": "openai", "name": "medium"},
+    "large": {"type": "openai", "name": "large"},
+    "ivrit-large-v3-turbo": {"type": "ggml", "path": "/app/models/ivrit-whisper-large-v3-turbo.bin"}
+}
 
 # Audio processing configuration
 CHUNK_DURATION = 5  # seconds - process audio in 5-second chunks
 SAMPLE_RATE = 16000  # Whisper expects 16kHz audio
 CHANNELS = 1  # Mono audio
+
+
+def load_model(model_name: str):
+    """Load a model based on its configuration"""
+    global current_model, current_model_name
+    
+    if model_name == current_model_name and current_model is not None:
+        return current_model
+    
+    if model_name not in MODEL_CONFIGS:
+        raise ValueError(f"Unknown model: {model_name}")
+    
+    config = MODEL_CONFIGS[model_name]
+    
+    if config["type"] == "openai":
+        logger.info(f"Loading OpenAI Whisper model: {config['name']}")
+        model = whisper.load_model(config["name"])
+    elif config["type"] == "ggml":
+        if not WHISPER_CPP_AVAILABLE:
+            raise ValueError("whisper-cpp-python is not available for GGML models")
+        logger.info(f"Loading GGML model from: {config['path']}")
+        model = WhisperCpp.from_pretrained(config["path"])
+    else:
+        raise ValueError(f"Unknown model type: {config['type']}")
+    
+    current_model = model
+    current_model_name = model_name
+    return model
 
 
 class TranscriptionRequest(BaseModel):
@@ -47,9 +111,11 @@ class TranscriptionRequest(BaseModel):
 class AudioStreamProcessor:
     """Processes audio streams from URLs using FFmpeg and transcribes with Whisper"""
     
-    def __init__(self, url: str, language: Optional[str] = None):
+    def __init__(self, url: str, language: Optional[str] = None, model_name: str = "large"):
         self.url = url
         self.language = language
+        self.model_name = model_name
+        self.model = None
         self.is_running = False
         self.audio_queue = queue.Queue(maxsize=10)
         self.ffmpeg_process: Optional[subprocess.Popen] = None
@@ -126,10 +192,14 @@ class AudioStreamProcessor:
 
 async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamProcessor):
     """Transcribe audio chunks and send results via WebSocket"""
-    global whisper_model
     
-    if whisper_model is None:
-        await websocket.send_json({"error": "Whisper model not loaded"})
+    # Load the model for this processor
+    try:
+        model = load_model(processor.model_name)
+        processor.model = model
+        model_config = MODEL_CONFIGS[processor.model_name]
+    except Exception as e:
+        await websocket.send_json({"error": f"Failed to load model {processor.model_name}: {str(e)}"})
         return
     
     try:
@@ -153,20 +223,29 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                 try:
                     # Transcribe audio chunk
                     logger.info(f"Transcribing audio chunk ({len(audio_data)} bytes)")
-                    result = whisper_model.transcribe(
-                        temp_path,
-                        language=processor.language,
-                        fp16=False,  # CPU compatibility
-                        verbose=False
-                    )
+                    
+                    if model_config["type"] == "openai":
+                        # Use OpenAI Whisper
+                        result = model.transcribe(
+                            temp_path,
+                            language=processor.language,
+                            fp16=False,  # CPU compatibility
+                            verbose=False
+                        )
+                        transcription_text = result.get('text', '').strip()
+                        detected_language = result.get('language', 'unknown')
+                    elif model_config["type"] == "ggml":
+                        # Use whisper.cpp
+                        result = model.transcribe(temp_path)
+                        transcription_text = result.strip() if isinstance(result, str) else result.get('text', '').strip()
+                        detected_language = processor.language or 'he'  # Default to Hebrew for Ivrit model
                     
                     # Send transcription to client
-                    transcription_text = result.get('text', '').strip()
                     if transcription_text:
                         await websocket.send_json({
                             "type": "transcription",
                             "text": transcription_text,
-                            "language": result.get('language', 'unknown')
+                            "language": detected_language
                         })
                         logger.info(f"Sent transcription: {transcription_text[:100]}...")
                     
@@ -196,20 +275,6 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
         await websocket.send_json({"error": str(e)})
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Load Whisper model on startup"""
-    global whisper_model
-    
-    logger.info(f"Loading Whisper model: {MODEL_SIZE}")
-    try:
-        whisper_model = whisper.load_model(MODEL_SIZE)
-        logger.info(f"Whisper model '{MODEL_SIZE}' loaded successfully")
-    except Exception as e:
-        logger.error(f"Failed to load Whisper model: {e}")
-        raise
-
-
 @app.get("/", response_class=HTMLResponse)
 async def get_home():
     """Serve the main web interface"""
@@ -229,16 +294,17 @@ async def websocket_transcribe(websocket: WebSocket):
         data = await websocket.receive_json()
         url = data.get("url")
         language = data.get("language")
+        model_name = data.get("model", "large")  # Default to large model
         
         if not url:
             await websocket.send_json({"error": "URL is required"})
             return
         
-        logger.info(f"Starting transcription for URL: {url}")
+        logger.info(f"Starting transcription for URL: {url} with model: {model_name}")
         await websocket.send_json({"type": "status", "message": "Starting audio stream..."})
         
         # Create audio processor
-        processor = AudioStreamProcessor(url, language)
+        processor = AudioStreamProcessor(url, language, model_name)
         
         # Start FFmpeg stream
         if not processor.start_ffmpeg_stream():
