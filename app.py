@@ -216,17 +216,32 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                 # Get audio chunk from queue (with timeout)
                 audio_data = processor.audio_queue.get(timeout=1)
                 
-                # Save chunk to temporary WAV file for Whisper
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
-                    temp_path = temp_audio.name
-                    
-                    # Write WAV header + audio data
-                    import wave
-                    with wave.open(temp_path, 'wb') as wav_file:
-                        wav_file.setnchannels(CHANNELS)
-                        wav_file.setsampwidth(2)  # 16-bit
-                        wav_file.setframerate(SAMPLE_RATE)
-                        wav_file.writeframes(audio_data)
+                # Save and normalize audio chunk for Whisper
+                with tempfile.NamedTemporaryFile(suffix='.raw', delete=False) as temp_audio:
+                    temp_raw = temp_audio.name
+                    temp_audio.write(audio_data)
+
+                # Normalize to 16kHz mono WAV (required by Whisper)
+                temp_path = temp_raw.replace('.raw', '.wav')
+                normalize_cmd = [
+                    'ffmpeg',
+                    '-f', 's16le',  # Input: signed 16-bit PCM
+                    '-ar', str(SAMPLE_RATE),  # Input sample rate
+                    '-ac', str(CHANNELS),  # Input channels
+                    '-i', temp_raw,
+                    '-ar', '16000',  # Whisper requires 16kHz
+                    '-ac', '1',  # Mono
+                    '-c:a', 'pcm_s16le',  # 16-bit PCM
+                    '-y',  # Overwrite
+                    temp_path
+                ]
+                norm_result = subprocess.run(normalize_cmd, capture_output=True)
+                if norm_result.returncode != 0:
+                    logger.error(f"FFmpeg normalization failed: {norm_result.stderr.decode()}")
+                    os.unlink(temp_raw)
+                    continue
+
+                os.unlink(temp_raw)  # Clean up raw file
                 
                 try:
                     # Transcribe audio chunk
@@ -243,33 +258,39 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                         transcription_text = result.get('text', '').strip()
                         detected_language = result.get('language', 'unknown')
                     elif model_config["type"] == "ggml":
-                        # Use whisper.cpp CLI - capture stdout for real-time transcription
+                        # Use whisper.cpp CLI with JSON output for reliable parsing
                         cmd = [
                             model["whisper_cpp_path"],
                             "-m", model["path"],
                             "-f", temp_path,
-                            "-nt",  # No timestamps for cleaner output
+                            "-oj",  # Output JSON format
+                            "--no-prints"  # Suppress debug output to stderr
                         ]
                         if processor.language:
                             cmd.extend(["-l", processor.language])
 
-                        # Run command and capture output
+                        # Run command and capture JSON output
                         result = subprocess.run(cmd, capture_output=True, text=True)
                         if result.returncode == 0:
-                            # Log raw output for debugging
-                            logger.debug(f"whisper.cpp stdout: {result.stdout[:200]}")
+                            try:
+                                # Parse JSON output
+                                import json
+                                data = json.loads(result.stdout)
 
-                            # Parse output - whisper.cpp prints transcription to stdout
-                            # Format is: [timestamp] transcription text
-                            # We want just the text
-                            output_lines = result.stdout.strip().split('\n')
-                            # Filter out metadata lines and extract just transcription
-                            transcription_text = ' '.join([
-                                line.strip()
-                                for line in output_lines
-                                if line.strip() and not line.startswith('whisper_') and not line.startswith('system_info') and not line.startswith('main:')
-                            ])
-                            logger.debug(f"Extracted transcription: '{transcription_text}'")
+                                # Extract transcription from JSON structure
+                                # whisper.cpp JSON format: {"transcription": [{"text": "...", "timestamps": {...}}]}
+                                if 'transcription' in data:
+                                    segments = data['transcription']
+                                    transcription_text = ' '.join([seg.get('text', '').strip() for seg in segments])
+                                else:
+                                    # Fallback: whole output might be the text
+                                    transcription_text = data.get('text', '').strip()
+
+                                logger.debug(f"Extracted transcription from JSON: '{transcription_text}'")
+                            except json.JSONDecodeError as e:
+                                logger.error(f"Failed to parse whisper.cpp JSON: {e}")
+                                logger.debug(f"Raw output: {result.stdout[:500]}")
+                                transcription_text = ""
                         else:
                             logger.error(f"whisper.cpp error: {result.stderr}")
                             transcription_text = ""
