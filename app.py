@@ -68,9 +68,10 @@ MODEL_CONFIGS = {
 }
 
 # Audio processing configuration
-CHUNK_DURATION = 5  # seconds - process audio in 5-second chunks
+CHUNK_DURATION = 3  # seconds - process audio in 3-second chunks for faster response
 SAMPLE_RATE = 16000  # Whisper expects 16kHz audio
 CHANNELS = 1  # Mono audio
+AUDIO_QUEUE_SIZE = 20  # Increase queue size to handle bursts
 
 
 def load_model(model_name: str):
@@ -116,7 +117,7 @@ class AudioStreamProcessor:
         self.model_name = model_name
         self.model = None
         self.is_running = False
-        self.audio_queue = queue.Queue(maxsize=10)
+        self.audio_queue = queue.Queue(maxsize=AUDIO_QUEUE_SIZE)
         self.ffmpeg_process: Optional[subprocess.Popen] = None
         
     def start_ffmpeg_stream(self):
@@ -234,27 +235,29 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                         transcription_text = result.get('text', '').strip()
                         detected_language = result.get('language', 'unknown')
                     elif model_config["type"] == "ggml":
-                        # Use whisper.cpp CLI
+                        # Use whisper.cpp CLI - capture stdout for real-time transcription
                         cmd = [
                             model["whisper_cpp_path"],
                             "-m", model["path"],
                             "-f", temp_path,
-                            "--output-txt",
-                            "--no-prints"
+                            "-nt",  # No timestamps for cleaner output
                         ]
                         if processor.language:
                             cmd.extend(["-l", processor.language])
 
+                        # Run command and capture output
                         result = subprocess.run(cmd, capture_output=True, text=True)
                         if result.returncode == 0:
-                            # whisper.cpp outputs to file.txt, read it
-                            txt_output = temp_path + ".txt"
-                            if os.path.exists(txt_output):
-                                with open(txt_output, 'r') as f:
-                                    transcription_text = f.read().strip()
-                                os.unlink(txt_output)
-                            else:
-                                transcription_text = result.stdout.strip()
+                            # Parse output - whisper.cpp prints transcription to stdout
+                            # Format is: [timestamp] transcription text
+                            # We want just the text
+                            output_lines = result.stdout.strip().split('\n')
+                            # Filter out metadata lines and extract just transcription
+                            transcription_text = ' '.join([
+                                line.strip()
+                                for line in output_lines
+                                if line.strip() and not line.startswith('whisper_')
+                            ])
                         else:
                             logger.error(f"whisper.cpp error: {result.stderr}")
                             transcription_text = ""

@@ -23,9 +23,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 COPY static/ ./static/
 
-# Copy pre-built whisper.cpp binary for GGML model support
-RUN mkdir -p /app/whisper.cpp/build/bin
+# Copy pre-built whisper.cpp binary and shared libraries for GGML model support
+RUN mkdir -p /app/whisper.cpp/build/bin && \
+    mkdir -p /app/whisper.cpp/build/src && \
+    mkdir -p /app/whisper.cpp/build/ggml/src
 COPY whisper.cpp/build/bin/whisper-cli /app/whisper.cpp/build/bin/whisper-cli
+COPY whisper.cpp/build/src/libwhisper.so* /app/whisper.cpp/build/src/
+COPY whisper.cpp/build/ggml/src/libggml*.so* /app/whisper.cpp/build/ggml/src/
+
+# Set library path for whisper.cpp
+ENV LD_LIBRARY_PATH=/app/whisper.cpp/build/src:/app/whisper.cpp/build/ggml/src:${LD_LIBRARY_PATH}
 
 # Create directory for Whisper models and copy the converted Ivrit model
 RUN mkdir -p /root/.cache/whisper && \
