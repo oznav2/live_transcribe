@@ -153,24 +153,32 @@ class AudioStreamProcessor:
         """Read audio data from FFmpeg in chunks"""
         if not self.ffmpeg_process:
             return
-        
+
         # Calculate chunk size: CHUNK_DURATION seconds of audio
         chunk_size = int(SAMPLE_RATE * CHANNELS * 2 * CHUNK_DURATION)  # 2 bytes per sample
-        
+
         try:
             while self.is_running:
                 audio_data = self.ffmpeg_process.stdout.read(chunk_size)
-                
+
                 if not audio_data:
                     logger.info("FFmpeg stream ended")
                     break
-                
+
                 # Put audio chunk in queue for processing
+                # If queue is full, remove oldest chunk and add new one (keep latest audio)
                 try:
-                    self.audio_queue.put(audio_data, timeout=1)
+                    self.audio_queue.put_nowait(audio_data)
                 except queue.Full:
-                    logger.warning("Audio queue full, skipping chunk")
-                    
+                    try:
+                        # Remove oldest chunk
+                        self.audio_queue.get_nowait()
+                        # Add new chunk
+                        self.audio_queue.put_nowait(audio_data)
+                        logger.warning("Audio queue full, dropped old chunk to make room")
+                    except:
+                        logger.warning("Audio queue full, skipping chunk")
+
         except Exception as e:
             logger.error(f"Error reading audio chunks: {e}")
         finally:
@@ -248,6 +256,9 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                         # Run command and capture output
                         result = subprocess.run(cmd, capture_output=True, text=True)
                         if result.returncode == 0:
+                            # Log raw output for debugging
+                            logger.debug(f"whisper.cpp stdout: {result.stdout[:200]}")
+
                             # Parse output - whisper.cpp prints transcription to stdout
                             # Format is: [timestamp] transcription text
                             # We want just the text
@@ -256,8 +267,9 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                             transcription_text = ' '.join([
                                 line.strip()
                                 for line in output_lines
-                                if line.strip() and not line.startswith('whisper_')
+                                if line.strip() and not line.startswith('whisper_') and not line.startswith('system_info') and not line.startswith('main:')
                             ])
+                            logger.debug(f"Extracted transcription: '{transcription_text}'")
                         else:
                             logger.error(f"whisper.cpp error: {result.stderr}")
                             transcription_text = ""
@@ -270,7 +282,9 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                             "text": transcription_text,
                             "language": detected_language
                         })
-                        logger.info(f"Sent transcription: {transcription_text[:100]}...")
+                        logger.info(f"✓ Sent transcription ({len(transcription_text)} chars): {transcription_text[:100]}...")
+                    else:
+                        logger.warning("⚠ No transcription text extracted from audio chunk")
                     
                 finally:
                     # Cleanup temp file
