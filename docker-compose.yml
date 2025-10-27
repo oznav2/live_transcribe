@@ -5,12 +5,13 @@ services:
     build: .
     container_name: live-transcription
     ports:
-      - "8000:8000"
+      - "8009:8009"
     environment:
-      # Whisper model size: tiny, base, small, medium, large
-      # Smaller = faster but less accurate, Larger = slower but more accurate
-      - WHISPER_MODEL=base
-      - PORT=8000
+      # Whisper model: tiny, base, small, medium, large, ivrit-large-v3-turbo
+      # OpenAI models: Smaller = faster but less accurate, Larger = slower but more accurate
+      # ivrit-large-v3-turbo: Hebrew-optimized GGML model
+      - WHISPER_MODEL=ivrit-large-v3-turbo
+      - PORT=8009
     volumes:
       # Cache Whisper models to avoid re-downloading
       - whisper-models:/root/.cache/whisper
@@ -18,7 +19,7 @@ services:
       - ./logs:/app/logs
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8009/health"]
       interval: 30s
       timeout: 10s
       retries: 3
