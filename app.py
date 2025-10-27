@@ -68,7 +68,8 @@ MODEL_CONFIGS = {
 }
 
 # Audio processing configuration
-CHUNK_DURATION = 3  # seconds - process audio in 3-second chunks for faster response
+CHUNK_DURATION = 30  # seconds - longer chunks for better context (was 3)
+CHUNK_OVERLAP = 5    # seconds - overlap to prevent word cutoff at boundaries
 SAMPLE_RATE = 16000  # Whisper expects 16kHz audio
 CHANNELS = 1  # Mono audio
 AUDIO_QUEUE_SIZE = 20  # Increase queue size to handle bursts
@@ -150,31 +151,51 @@ class AudioStreamProcessor:
             return False
     
     def read_audio_chunks(self):
-        """Read audio data from FFmpeg in chunks"""
+        """Read audio data from FFmpeg in chunks with overlap for context preservation"""
         if not self.ffmpeg_process:
             return
 
-        # Calculate chunk size: CHUNK_DURATION seconds of audio
+        # Calculate chunk size and overlap size in bytes
         chunk_size = int(SAMPLE_RATE * CHANNELS * 2 * CHUNK_DURATION)  # 2 bytes per sample
+        overlap_size = int(SAMPLE_RATE * CHANNELS * 2 * CHUNK_OVERLAP)
+
+        overlap_buffer = b''  # Store overlap from previous chunk
 
         try:
             while self.is_running:
-                audio_data = self.ffmpeg_process.stdout.read(chunk_size)
+                # Read new audio data (accounting for overlap)
+                new_data_size = chunk_size - len(overlap_buffer)
+                audio_data = self.ffmpeg_process.stdout.read(new_data_size)
 
                 if not audio_data:
+                    # Stream ended - process remaining overlap if it exists
+                    if overlap_buffer and len(overlap_buffer) >= SAMPLE_RATE * CHANNELS * 2:
+                        try:
+                            self.audio_queue.put_nowait(overlap_buffer)
+                        except queue.Full:
+                            logger.warning("Audio queue full, dropped final chunk")
                     logger.info("FFmpeg stream ended")
                     break
+
+                # Combine overlap with new data
+                full_chunk = overlap_buffer + audio_data
+
+                # Save overlap for next iteration (last CHUNK_OVERLAP seconds)
+                if len(full_chunk) >= overlap_size:
+                    overlap_buffer = full_chunk[-overlap_size:]
+                else:
+                    overlap_buffer = full_chunk
 
                 # Put audio chunk in queue for processing
                 # If queue is full, remove oldest chunk and add new one (keep latest audio)
                 try:
-                    self.audio_queue.put_nowait(audio_data)
+                    self.audio_queue.put_nowait(full_chunk)
                 except queue.Full:
                     try:
                         # Remove oldest chunk
                         self.audio_queue.get_nowait()
                         # Add new chunk
-                        self.audio_queue.put_nowait(audio_data)
+                        self.audio_queue.put_nowait(full_chunk)
                         logger.warning("Audio queue full, dropped old chunk to make room")
                     except:
                         logger.warning("Audio queue full, skipping chunk")
