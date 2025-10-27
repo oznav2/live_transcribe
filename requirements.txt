@@ -6,6 +6,7 @@ websockets==12.0
 
 # Whisper & Audio Processing
 openai-whisper==20231117
+pywhispercpp==1.2.0
 torch==2.1.2
 torchaudio==2.1.2
 numpy==1.24.3

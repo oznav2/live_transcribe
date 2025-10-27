@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 
 import whisper
 try:
-    from whispercpp import Whisper as WhisperCpp
+    from pywhispercpp.model import Model as WhisperCpp
     WHISPER_CPP_AVAILABLE = True
 except ImportError:
     WHISPER_CPP_AVAILABLE = False
@@ -92,9 +92,9 @@ def load_model(model_name: str):
         model = whisper.load_model(config["name"])
     elif config["type"] == "ggml":
         if not WHISPER_CPP_AVAILABLE:
-            raise ValueError("whisper-cpp-python is not available for GGML models")
+            raise ValueError("pywhispercpp is not available for GGML models")
         logger.info(f"Loading GGML model from: {config['path']}")
-        model = WhisperCpp.from_pretrained(config["path"])
+        model = WhisperCpp(config["path"])
     else:
         raise ValueError(f"Unknown model type: {config['type']}")
     
@@ -235,9 +235,9 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                         transcription_text = result.get('text', '').strip()
                         detected_language = result.get('language', 'unknown')
                     elif model_config["type"] == "ggml":
-                        # Use whisper.cpp
-                        result = model.transcribe(temp_path)
-                        transcription_text = result.strip() if isinstance(result, str) else result.get('text', '').strip()
+                        # Use pywhispercpp - returns generator of segments
+                        segments = model.transcribe(temp_path, language=processor.language)
+                        transcription_text = ' '.join([segment.text for segment in segments]).strip()
                         detected_language = processor.language or 'he'  # Default to Hebrew for Ivrit model
                     
                     # Send transcription to client
