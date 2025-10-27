@@ -66,7 +66,7 @@ MODEL_CONFIGS = {
     "small": {"type": "openai", "name": "small"},
     "medium": {"type": "openai", "name": "medium"},
     "large": {"type": "openai", "name": "large"},
-    "ivrit-large-v3-turbo": {"type": "ggml", "path": "/app/models/ivrit-whisper-large-v3-turbo.bin"}
+    "ivrit-large-v3-turbo": {"type": "ggml", "path": os.getenv("IVRIT_MODEL_PATH", "models/ivrit-whisper-large-v3-turbo.bin")}
 }
 
 # Audio processing configuration
