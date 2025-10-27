@@ -343,8 +343,8 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "whisper_model": MODEL_SIZE,
-        "model_loaded": whisper_model is not None
+        "whisper_model": current_model_name or MODEL_SIZE,
+        "model_loaded": current_model is not None
     }
 
 
