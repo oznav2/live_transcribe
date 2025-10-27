@@ -23,6 +23,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 COPY static/ ./static/
 
+# Copy pre-built whisper.cpp binary for GGML model support
+RUN mkdir -p /app/whisper.cpp/build/bin
+COPY whisper.cpp/build/bin/whisper-cli /app/whisper.cpp/build/bin/whisper-cli
+
 # Create directory for Whisper models and copy the converted Ivrit model
 RUN mkdir -p /root/.cache/whisper && \
     mkdir -p /app/models
@@ -34,6 +38,7 @@ EXPOSE 8009
 # Environment variables
 ENV WHISPER_MODEL=ivrit-large-v3-turbo
 ENV IVRIT_MODEL_PATH=/app/models/ivrit-whisper-large-v3-turbo.bin
+ENV WHISPER_CPP_PATH=/app/whisper.cpp/build/bin/whisper-cli
 ENV PORT=8009
 ENV PYTHONUNBUFFERED=1
 

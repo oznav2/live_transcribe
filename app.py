@@ -14,12 +14,10 @@ from typing import Optional
 from contextlib import asynccontextmanager
 
 import whisper
-try:
-    from pywhispercpp.model import Model as WhisperCpp
-    WHISPER_CPP_AVAILABLE = True
-except ImportError:
-    WHISPER_CPP_AVAILABLE = False
-    WhisperCpp = None
+
+# Check if whisper.cpp CLI is available
+WHISPER_CPP_PATH = os.getenv("WHISPER_CPP_PATH", "/app/whisper.cpp/build/bin/whisper-cli")
+WHISPER_CPP_AVAILABLE = os.path.exists(WHISPER_CPP_PATH)
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -92,9 +90,10 @@ def load_model(model_name: str):
         model = whisper.load_model(config["name"])
     elif config["type"] == "ggml":
         if not WHISPER_CPP_AVAILABLE:
-            raise ValueError("pywhispercpp is not available for GGML models")
+            raise ValueError(f"whisper.cpp CLI not found at: {WHISPER_CPP_PATH}")
         logger.info(f"Loading GGML model from: {config['path']}")
-        model = WhisperCpp(config["path"])
+        # For GGML models, we store the path and use whisper.cpp CLI
+        model = {"type": "ggml_cli", "path": config["path"], "whisper_cpp_path": WHISPER_CPP_PATH}
     else:
         raise ValueError(f"Unknown model type: {config['type']}")
     
@@ -235,9 +234,30 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                         transcription_text = result.get('text', '').strip()
                         detected_language = result.get('language', 'unknown')
                     elif model_config["type"] == "ggml":
-                        # Use pywhispercpp - returns generator of segments
-                        segments = model.transcribe(temp_path, language=processor.language)
-                        transcription_text = ' '.join([segment.text for segment in segments]).strip()
+                        # Use whisper.cpp CLI
+                        cmd = [
+                            model["whisper_cpp_path"],
+                            "-m", model["path"],
+                            "-f", temp_path,
+                            "--output-txt",
+                            "--no-prints"
+                        ]
+                        if processor.language:
+                            cmd.extend(["-l", processor.language])
+
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                        if result.returncode == 0:
+                            # whisper.cpp outputs to file.txt, read it
+                            txt_output = temp_path + ".txt"
+                            if os.path.exists(txt_output):
+                                with open(txt_output, 'r') as f:
+                                    transcription_text = f.read().strip()
+                                os.unlink(txt_output)
+                            else:
+                                transcription_text = result.stdout.strip()
+                        else:
+                            logger.error(f"whisper.cpp error: {result.stderr}")
+                            transcription_text = ""
                         detected_language = processor.language or 'he'  # Default to Hebrew for Ivrit model
                     
                     # Send transcription to client
