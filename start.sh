@@ -1,5 +1,5 @@
 #!/bin/bash
-# Quick start script for Live Transcription App
+# Quick start script for Live Transcription App (CUDA prebuilt runtime)
 
 set -e
 
@@ -24,6 +24,13 @@ fi
 
 echo "✓ Docker is installed"
 echo "✓ Docker Compose is installed"
+
+# Choose compose command (v2 preferred)
+if docker compose version &> /dev/null; then
+    COMPOSE="docker compose"
+else
+    COMPOSE="docker-compose"
+fi
 echo ""
 
 # Check if .env file exists, if not create from example
@@ -34,13 +41,38 @@ if [ ! -f .env ]; then
     echo ""
 fi
 
+###############################
+# Ensure prebuilt CUDA artifacts exist
+###############################
+CLI_PATH="whisper.cpp/build/bin/whisper-cli"
+GGML_LIB_DIR="whisper.cpp/build/ggml/src"
+WHISPER_LIB_DIR="whisper.cpp/build/src"
+
+if [ ! -f "$CLI_PATH" ]; then
+    echo "whisper-cli not found at $CLI_PATH"
+    echo "Running prebuild.py to compile whisper.cpp with CUDA (host)..."
+    python3 prebuild.py --cuda || {
+        echo "❌ Failed to prebuild whisper.cpp. Ensure CMake >= 3.18 and CUDA toolkit installed."
+        exit 1
+    }
+fi
+
+if [ ! -d "$GGML_LIB_DIR" ] || ! ls -1 "$GGML_LIB_DIR"/libggml*.so* >/dev/null 2>&1; then
+    echo "⚠️  ggml shared libraries not found under $GGML_LIB_DIR"
+    echo "    Continuing, but CUDA backend may not load if libs are missing."
+fi
+
+if [ ! -d "$WHISPER_LIB_DIR" ] || ! ls -1 "$WHISPER_LIB_DIR"/libwhisper.so* >/dev/null 2>&1; then
+    echo "⚠️  libwhisper.so not found under $WHISPER_LIB_DIR (may be fine for some builds)."
+fi
+
 # Build and start the application
-echo "Building Docker image..."
-docker-compose build
+echo "Building Docker image (runtime-prebuilt-with-cuda target)..."
+$COMPOSE build
 
 echo ""
 echo "Starting application..."
-docker-compose up -d
+$COMPOSE up -d
 
 echo ""
 echo "=========================================="
@@ -51,10 +83,10 @@ echo "Access the application at:"
 echo "  🌐 http://localhost:8009"
 echo ""
 echo "Useful commands:"
-echo "  View logs:    docker-compose logs -f"
-echo "  Stop app:     docker-compose down"
-echo "  Restart:      docker-compose restart"
-echo "  Check status: docker-compose ps"
+echo "  View logs:    $COMPOSE logs -f"
+echo "  Stop app:     $COMPOSE down"
+echo "  Restart:      $COMPOSE restart"
+echo "  Check status: $COMPOSE ps"
 echo ""
 echo "Waiting for application to be ready..."
 sleep 5

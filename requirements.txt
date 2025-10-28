@@ -6,10 +6,13 @@ websockets>=13.0
 
 # Whisper & Audio Processing
 openai-whisper==20231117
-torch==2.1.2
-torchaudio==2.1.2
-numpy==1.24.3
-scipy==1.11.4
+# Only install torch/torchaudio on Python versions < 3.13 (no official wheels yet)
+torch==2.1.2; python_version < "3.13"
+torchaudio==2.1.2; python_version < "3.13"
+# NumPy/SciPy versions compatible with PyTorch 2.1 CUDA wheels
+# Avoid NumPy 2.x to prevent ABI/runtime issues in compiled modules
+numpy<2
+scipy<1.12
 
 # FFmpeg Python wrapper
 ffmpeg-python==0.2.0

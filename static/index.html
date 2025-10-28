@@ -462,6 +462,15 @@
                 </select>
             </div>
 
+            <!-- Scope Selection -->
+            <div class="form-group">
+                <label class="form-label">Transcription Scope</label>
+                <select id="scopeSelect" class="form-select">
+                    <option value="full">Full Stream</option>
+                    <option value="first60">First 60 seconds (capture then transcribe)</option>
+                </select>
+            </div>
+
             <!-- Model Selection -->
             <div class="form-group">
                 <label class="form-label">Transcription Model</label>
@@ -498,6 +507,10 @@
                 <button id="stopBtn" class="btn btn-danger hidden">
                     <i class="fas fa-stop"></i>
                     Stop
+                </button>
+                <button id="transcribeNowBtn" class="btn btn-secondary hidden" title="Transcribe captured audio">
+                    <i class="fas fa-bolt"></i>
+                    Transcribe Now
                 </button>
             </div>
 
@@ -550,12 +563,15 @@
     <script>
         let ws = null;
         let transcriptionText = '';
+        let captureId = null;
 
         const urlInput = document.getElementById('urlInput');
         const languageSelect = document.getElementById('languageSelect');
         const modelSelect = document.getElementById('modelSelect');
+        const scopeSelect = document.getElementById('scopeSelect');
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
+        const transcribeNowBtn = document.getElementById('transcribeNowBtn');
         const clearBtn = document.getElementById('clearBtn');
         const copyBtn = document.getElementById('copyBtn');
         const downloadBtn = document.getElementById('downloadBtn');
@@ -606,6 +622,7 @@
 
             const language = languageSelect.value || null;
             const model = modelSelect.value || 'large';
+            const captureMode = scopeSelect.value || 'full';
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${protocol}//${window.location.host}/ws/transcribe`);
@@ -614,13 +631,14 @@
                 console.log('WebSocket connected');
                 updateStatus('connecting', 'Connecting to stream...');
                 
-                ws.send(JSON.stringify({ url, language, model }));
+                ws.send(JSON.stringify({ url, language, model, captureMode }));
                 
                 startBtn.classList.add('hidden');
                 stopBtn.classList.remove('hidden');
                 urlInput.disabled = true;
                 languageSelect.disabled = true;
                 modelSelect.disabled = true;
+                scopeSelect.disabled = true;
             };
 
             ws.onmessage = (event) => {
@@ -631,6 +649,11 @@
                 } else if (data.type === 'transcription') {
                     updateStatus('active', 'Transcribing...');
                     addTranscription(data.text);
+                } else if (data.type === 'capture_ready') {
+                    captureId = data.capture_id;
+                    updateStatus('idle', 'Capture ready. Click "Transcribe Now"');
+                    transcribeNowBtn.classList.remove('hidden');
+                    stopBtn.classList.add('hidden');
                 } else if (data.type === 'complete') {
                     updateStatus('idle', 'Transcription complete');
                     stopTranscription();
@@ -665,9 +688,12 @@
             
             startBtn.classList.remove('hidden');
             stopBtn.classList.add('hidden');
+            transcribeNowBtn.classList.add('hidden');
+            captureId = null;
             urlInput.disabled = false;
             languageSelect.disabled = false;
             modelSelect.disabled = false;
+            scopeSelect.disabled = false;
         }
 
         function clearTranscription() {
@@ -719,6 +745,19 @@
             URL.revokeObjectURL(url);
         }
 
+        function transcribeCapturedAudio() {
+            if (!ws || !captureId) {
+                alert('No captured audio ready');
+                return;
+            }
+            const language = languageSelect.value || null;
+            const model = modelSelect.value || 'large';
+            updateStatus('connecting', 'Transcribing captured audio...');
+            ws.send(JSON.stringify({ action: 'transcribe_capture', capture_id: captureId, language, model }));
+            transcribeNowBtn.classList.add('hidden');
+        }
+
+        transcribeNowBtn.addEventListener('click', transcribeCapturedAudio);
         startBtn.addEventListener('click', startTranscription);
         stopBtn.addEventListener('click', stopTranscription);
         clearBtn.addEventListener('click', clearTranscription);

@@ -1,26 +1,4 @@
-## CUDA builder stage for whisper.cpp (GGML_CUDA)
-# Align builder CUDA version with PyTorch cu118 runtime for compatibility
-FROM nvidia/cuda:11.8.0-devel-ubuntu22.04 AS whispercpp-builder
-
-RUN apt-get update && apt-get install -y \
-    git \
-    build-essential \
-    cmake \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /src
-
-# Copy local whisper.cpp source to builder
-COPY whisper.cpp/ /src/whisper.cpp/
-
-# Build whisper.cpp with CUDA support (no cuBLAS to minimize runtime deps)
-RUN cmake -S /src/whisper.cpp -B /build \
-      -DGGML_CUDA=1 \
-      -DGGML_CUBLAS=0 \
-      -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build /build -j --config Release
-
-# Runtime stage
+## Base Python runtime stage
 FROM python:3.11-slim AS base
 
 # Install system dependencies including FFmpeg, build tools, and Python pip
@@ -56,22 +34,6 @@ PY
 COPY app.py .
 COPY static/ ./static/
 
-# Copy CUDA-built whisper.cpp binary and shared libraries from builder
-RUN mkdir -p /app/whisper.cpp/build/bin && \
-    mkdir -p /app/whisper.cpp/build/src && \
-    mkdir -p /app/whisper.cpp/build/ggml/src && \
-    mkdir -p /usr/local/cuda/lib64
-COPY --from=whispercpp-builder /build/bin/whisper-cli /app/whisper.cpp/build/bin/whisper-cli
-COPY --from=whispercpp-builder /build/src/libwhisper.so* /app/whisper.cpp/build/src/
-COPY --from=whispercpp-builder /build/ggml/src/libggml*.so* /app/whisper.cpp/build/ggml/src/
-
-# Bundle essential CUDA runtime libs required by ggml CUDA backend
-COPY --from=whispercpp-builder /usr/local/cuda/lib64/libcudart.so* /usr/local/cuda/lib64/
-COPY --from=whispercpp-builder /usr/local/cuda/lib64/libnvrtc.so* /usr/local/cuda/lib64/
-
-# Set library path for whisper.cpp and CUDA runtime
-ENV LD_LIBRARY_PATH=/app/whisper.cpp/build/src:/app/whisper.cpp/build/ggml/src:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
-
 # Create directory for Whisper models and copy the converted Ivrit model
 RUN mkdir -p /root/.cache/whisper && \
     mkdir -p /app/models
@@ -91,5 +53,103 @@ ENV PYTHONUNBUFFERED=1
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:8009/health')" || exit 1
 
-# Run the application
+##############################################
+# Runtime (prebuilt): copy locally built artifacts
+##############################################
+FROM base AS runtime-prebuilt
+
+# Prepare directories
+RUN mkdir -p /app/whisper.cpp/build/bin && \
+    mkdir -p /app/whisper.cpp/build/src && \
+    mkdir -p /app/whisper.cpp/build/ggml/src && \
+    mkdir -p /usr/local/cuda/lib64
+
+## Copy locally built whisper.cpp artifacts directly from repo (simpler than ./prebuilt)
+## Make sure you have run the host build: `cmake -S whisper.cpp -B whisper.cpp/build -DGGML_CUDA=1 && cmake --build whisper.cpp/build -j`
+COPY whisper.cpp/build/bin/whisper-cli /app/whisper.cpp/build/bin/whisper-cli
+COPY whisper.cpp/build/src/libwhisper.so* /app/whisper.cpp/build/src/
+COPY whisper.cpp/build/ggml/src/libggml*.so* /app/whisper.cpp/build/ggml/src/
+
+# Bundle essential CUDA runtime libs required by ggml CUDA backend
+# We use a lightweight CUDA runtime stage to avoid building whisper.cpp in-container
+##############################################
+# CUDA runtime libs stage (no build, just libs)
+##############################################
+FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04 AS cuda-runtime-libs
+
+##############################################
+# Back to runtime-prebuilt to include CUDA libs
+##############################################
+FROM base AS runtime-prebuilt-with-cuda
+
+# Prepare directories
+RUN mkdir -p /app/whisper.cpp/build/bin && \
+    mkdir -p /app/whisper.cpp/build/src && \
+    mkdir -p /app/whisper.cpp/build/ggml/src && \
+    mkdir -p /usr/local/cuda/lib64
+
+# Copy locally built whisper.cpp artifacts directly from repo
+COPY whisper.cpp/build/bin/whisper-cli /app/whisper.cpp/build/bin/whisper-cli
+COPY whisper.cpp/build/src/libwhisper.so* /app/whisper.cpp/build/src/
+COPY whisper.cpp/build/ggml/src/libggml*.so* /app/whisper.cpp/build/ggml/src/
+
+# Copy CUDA runtime libraries needed by ggml CUDA backend
+COPY --from=cuda-runtime-libs /usr/local/cuda/lib64/libcudart.so* /usr/local/cuda/lib64/
+COPY --from=cuda-runtime-libs /usr/local/cuda/lib64/libnvrtc.so* /usr/local/cuda/lib64/
+
+# Set library path for whisper.cpp and CUDA runtime libs
+ENV LD_LIBRARY_PATH=/app/whisper.cpp/build/src:/app/whisper.cpp/build/ggml/src:/usr/local/cuda/lib64
+
+# Expose port and run
+EXPOSE 8009
+CMD ["python", "app.py"]
+
+##############################################
+# CUDA builder stage for whisper.cpp (GGML_CUDA)
+##############################################
+FROM nvidia/cuda:11.8.0-devel-ubuntu22.04 AS whispercpp-builder
+
+RUN apt-get update && apt-get install -y \
+    git \
+    build-essential \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+
+# Copy local whisper.cpp source to builder
+COPY whisper.cpp/ /src/whisper.cpp/
+
+# Build whisper.cpp with CUDA support (no cuBLAS to minimize runtime deps)
+RUN cmake -S /src/whisper.cpp -B /build \
+      -DGGML_CUDA=1 \
+      -DGGML_CUBLAS=0 \
+      -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /build -j --config Release
+
+##############################################
+# Runtime (built): copy artifacts from builder
+##############################################
+FROM base AS runtime-built
+
+# Prepare directories
+RUN mkdir -p /app/whisper.cpp/build/bin && \
+    mkdir -p /app/whisper.cpp/build/src && \
+    mkdir -p /app/whisper.cpp/build/ggml/src && \
+    mkdir -p /usr/local/cuda/lib64
+
+# Copy CUDA-built whisper.cpp binary and shared libraries from builder
+COPY --from=whispercpp-builder /build/bin/whisper-cli /app/whisper.cpp/build/bin/whisper-cli
+COPY --from=whispercpp-builder /build/src/libwhisper.so* /app/whisper.cpp/build/src/
+COPY --from=whispercpp-builder /build/ggml/src/libggml*.so* /app/whisper.cpp/build/ggml/src/
+
+# Bundle essential CUDA runtime libs required by ggml CUDA backend
+COPY --from=whispercpp-builder /usr/local/cuda/lib64/libcudart.so* /usr/local/cuda/lib64/
+COPY --from=whispercpp-builder /usr/local/cuda/lib64/libnvrtc.so* /usr/local/cuda/lib64/
+
+# Set library path for whisper.cpp and CUDA runtime
+ENV LD_LIBRARY_PATH=/app/whisper.cpp/build/src:/app/whisper.cpp/build/ggml/src:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+
+# Expose port and run
+EXPOSE 8009
 CMD ["python", "app.py"]

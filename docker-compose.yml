@@ -2,10 +2,16 @@ version: '3.8'
 
 services:
   transcription-app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime-prebuilt-with-cuda
     container_name: live-transcription
     ports:
       - "8009:8009"
+    # Load environment variables from .env (not copied into image)
+    env_file:
+      - .env
     environment:
       # Whisper model: tiny, base, small, medium, large, ivrit-large-v3-turbo
       # OpenAI models: Smaller = faster but less accurate, Larger = slower but more accurate
@@ -14,6 +20,11 @@ services:
       - PORT=8009
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=all
+      # Ensure Deepgram config is available when present in .env
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
+      - DEEPGRAM_TIME_LIMIT=${DEEPGRAM_TIME_LIMIT}
+      - DEEPGRAM_MODEL=${DEEPGRAM_MODEL}
+      - DEEPGRAM_LANGUAGE=${DEEPGRAM_LANGUAGE}
     volumes:
       # Cache Whisper models to avoid re-downloading
       - whisper-models:/root/.cache/whisper
