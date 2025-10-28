@@ -19,10 +19,10 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install Python dependencies (PyTorch CUDA 11.8 wheels)
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip uninstall -y torch torchvision torchaudio || true && \
-    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 \
+# First install torch with CUDA support, then install other dependencies
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 \
         torch==2.1.2+cu118 torchaudio==2.1.2+cu118 && \
+    pip install --no-cache-dir -r requirements.txt && \
     python - <<'PY'
 import torch
 print('CUDA Available:', torch.cuda.is_available())

@@ -549,7 +549,173 @@
       "lastAccessed": "2025-10-28T08:33:54.352Z",
       "lastVerified": "2025-10-28T08:33:54.352Z",
       "status": "fresh"
+    },
+    {
+      "id": "mem_1761673623356_pauz1n8jo",
+      "content": "Issue identified: Docker container fails with \"ModuleNotFoundError: No module named 'whisper'\" at app.py line 22. The requirements.txt contains openai-whisper==20231117 but the import fails in the container. Need to verify if the package is being installed correctly and if there are any compatibility issues.",
+      "type": "troubleshooting",
+      "tags": [
+        "troubleshooting",
+        "docker",
+        "whisper",
+        "error",
+        "dependencies"
+      ],
+      "timestamp": "2025-10-28T17:47:03.356Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-28T17:47:03.356Z",
+      "lastVerified": "2025-10-28T17:47:03.356Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1761673651695_c5y90gu1l",
+      "content": "Root cause found: The workspace has a local 'whisper' directory that conflicts with the 'openai-whisper' package installation in Docker. The Dockerfile doesn't exclude this local directory, causing module import issues. Solution: Create a .dockerignore file to exclude the local whisper directory and other unnecessary files from the Docker build context.",
+      "type": "code",
+      "tags": [
+        "code",
+        "docker",
+        "whisper",
+        "root-cause",
+        "solution"
+      ],
+      "timestamp": "2025-10-28T17:47:31.695Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-28T17:47:31.695Z",
+      "lastVerified": "2025-10-28T17:47:31.695Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1761673669677_sapa3mf0u",
+      "content": "Fix applied: Created .dockerignore file that excludes the local 'whisper/' directory and 'whisper-large-v3-turbo/' directory. This prevents the local whisper source code from being copied into the Docker container, which was shadowing the openai-whisper package installation.",
+      "type": "troubleshooting",
+      "tags": [
+        "troubleshooting",
+        "docker",
+        "fix",
+        "dockerignore"
+      ],
+      "timestamp": "2025-10-28T17:47:49.677Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-28T17:47:49.677Z",
+      "lastVerified": "2025-10-28T17:47:49.677Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1761673748497_qhe2fcm9c",
+      "content": "Fix completed: Created .dockerignore file to exclude local whisper/ and whisper-large-v3-turbo/ directories that were conflicting with the openai-whisper package. User needs to rebuild with --no-cache flag to apply the fix.",
+      "type": "troubleshooting",
+      "tags": [
+        "troubleshooting",
+        "docker",
+        "whisper",
+        "fix-complete"
+      ],
+      "timestamp": "2025-10-28T17:49:08.497Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-28T17:49:08.497Z",
+      "lastVerified": "2025-10-28T17:49:08.497Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1761678678913_mc18v48zh",
+      "content": "New finding: openai-whisper package is not being installed at all in the Docker container. Only torch, torchaudio, and a few other packages are present. The pip install from requirements.txt is failing silently or the requirements.txt isn't being installed properly. Need to investigate the Dockerfile RUN command for pip install.",
+      "type": "config",
+      "tags": [
+        "config",
+        "docker",
+        "pip",
+        "installation-failure"
+      ],
+      "timestamp": "2025-10-28T19:11:18.913Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-28T19:11:18.913Z",
+      "lastVerified": "2025-10-28T19:11:18.913Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1761678693470_mj3fi42w0",
+      "content": "Root cause identified: The Dockerfile was installing requirements.txt (including openai-whisper), then uninstalling torch/torchaudio, which also removed openai-whisper as a dependency. Fixed by reversing the order: install torch CUDA wheels first, THEN install requirements.txt so openai-whisper is installed with the correct torch version already present.",
+      "type": "config",
+      "tags": [
+        "config",
+        "docker",
+        "root-cause",
+        "fix",
+        "dependency-order"
+      ],
+      "timestamp": "2025-10-28T19:11:33.470Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-28T19:11:33.470Z",
+      "lastVerified": "2025-10-28T19:11:33.470Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1761678715327_jexkshavu",
+      "content": "Complete fix applied for Docker whisper import error:\n1. Created .dockerignore to exclude local whisper/ directory that was conflicting with openai-whisper package\n2. Fixed Dockerfile: Changed pip install order to install torch CUDA wheels FIRST, then requirements.txt (prevents openai-whisper from being uninstalled)\n3. Updated requirements.txt: Removed torch/torchaudio lines since they're now installed directly in Dockerfile with CUDA support\nUser needs to rebuild with: docker-compose build --no-cache",
+      "type": "config",
+      "tags": [
+        "config",
+        "docker",
+        "whisper",
+        "complete-fix",
+        "summary"
+      ],
+      "timestamp": "2025-10-28T19:11:55.327Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-28T19:11:55.327Z",
+      "lastVerified": "2025-10-28T19:11:55.327Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1761678854218_pdzixa4dn",
+      "content": "Investigation update: Confirmed openai-whisper is NOT installed in the container. PyPI docs show whisper requires PyTorch >=1.10.1 with no upper limit, so torch 2.1.2+cu118 should be compatible. Need to check if pip install is actually failing during the build process. My fix should work in theory (install torch CUDA first, then requirements.txt), but need to verify the actual build logs.",
+      "type": "tip",
+      "tags": [
+        "tip",
+        "investigation",
+        "whisper",
+        "dependencies",
+        "pytorch"
+      ],
+      "timestamp": "2025-10-28T19:14:14.218Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-28T19:14:14.218Z",
+      "lastVerified": "2025-10-28T19:14:14.218Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1761679235683_urrc0ryi2",
+      "content": "Key insight on fix: The issue was that requirements.txt had torch==2.1.2 which got installed, then uninstalled, then replaced with torch 2.1.2+cu118. This broke openai-whisper. My fix installs torch 2.1.2+cu118 FIRST, then when requirements.txt is processed, pip sees torch already installed (2.1.2+cu118 satisfies ==2.1.2 requirement due to local version identifier), so it doesn't reinstall torch and openai-whisper installs cleanly. Also removed torch lines from requirements.txt to prevent any reinstallation attempts.",
+      "type": "config",
+      "tags": [
+        "config",
+        "fix-analysis",
+        "docker",
+        "pip-versioning",
+        "local-version-identifier"
+      ],
+      "timestamp": "2025-10-28T19:20:35.683Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-28T19:20:35.683Z",
+      "lastVerified": "2025-10-28T19:20:35.683Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1761679724536_xw62voi4c",
+      "content": "Build progress: openai-whisper successfully built during Docker build! Build failed on simpleaudio (missing ALSA libraries). Fixed by removing unused audio packages (pyttsx3, simpleaudio, sounddevice, wavio) from requirements.txt - none are used in app.py. User should rebuild now.",
+      "type": "tip",
+      "tags": [
+        "tip",
+        "docker",
+        "build-progress",
+        "dependencies-cleanup"
+      ],
+      "timestamp": "2025-10-28T19:28:44.536Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-28T19:28:44.536Z",
+      "lastVerified": "2025-10-28T19:28:44.536Z",
+      "status": "fresh"
     }
   ],
-  "lastUpdated": "2025-10-28T08:33:54.352Z"
+  "lastUpdated": "2025-10-28T19:28:44.536Z"
 }

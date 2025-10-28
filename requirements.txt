@@ -3,12 +3,9 @@ fastapi==0.109.0
 uvicorn[standard]==0.27.0
 python-multipart==0.0.6
 websockets>=13.0
-
 # Whisper & Audio Processing
 openai-whisper==20231117
-# Only install torch/torchaudio on Python versions < 3.13 (no official wheels yet)
-torch==2.1.2; python_version < "3.13"
-torchaudio==2.1.2; python_version < "3.13"
+# Note: torch and torchaudio are installed separately in Dockerfile with CUDA support
 # NumPy/SciPy versions compatible with PyTorch 2.1 CUDA wheels
 # Avoid NumPy 2.x to prevent ABI/runtime issues in compiled modules
 numpy<2
@@ -29,3 +26,5 @@ aiofiles==23.2.1
 pydantic==2.5.3
 pydantic-settings==2.1.0
 requests==2.32.3
+webrtcvad==2.0.10
+pydub==0.25.1

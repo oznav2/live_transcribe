@@ -781,8 +781,7 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
             "punctuate": True,
             "numerals": True,
             "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
-            "language": os.getenv("DEEPGRAM_LANGUAGE", "en-US"),
-            "tier": "nova",
+            "language": os.getenv("DEEPGRAM_LANGUAGE", "en-US")
         }
 
         # Create a websocket client (SDK v4)
@@ -792,19 +791,21 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
         connection.on(DG_EVENT_OPEN, lambda *_: logger.info("Deepgram connection opened"))
 
         # Listen for any transcripts received from Deepgram
-        def on_message(message):
-            # If the SDK gives typed objects and not dicts, prefer extraction
-            sentence = extract_deepgram_transcript(message)
+        def on_message(*args, **kwargs):
+            # Deepgram v4 emits handler(self, result=..., **kwargs)
+            payload = kwargs.get('result') if 'result' in kwargs else (args[1] if len(args) >= 2 else None)
+            sentence = extract_deepgram_transcript(payload) if payload is not None else ''
+
             if TRANSCRIPT_ONLY:
-                # Use the helper compatible with the user's snippet (prints only transcript)
-                if isinstance(message, dict):
-                    print_transcript(message)
+                if isinstance(payload, dict):
+                    print_transcript(payload)
                 else:
-                    # mimic by printing extracted transcript
                     print(sentence)
             else:
-                # Print entire payload when not transcript-only
-                print(message)
+                try:
+                    print(payload)
+                except Exception:
+                    print(sentence)
 
             if sentence:
                 try:
@@ -834,10 +835,11 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
         connection.on(DG_EVENT_CLOSE, on_close)
 
         # On error, try to notify if still connected, then mark closed
-        def on_error(error):
+        def on_error(*args, **kwargs):
+            err = kwargs.get('error') if 'error' in kwargs else (args[1] if len(args) >= 2 else None)
             try:
                 if ws_open and websocket.client_state == WebSocketState.CONNECTED and not dg_closed_event.is_set():
-                    asyncio.create_task(websocket.send_json({"error": f"Deepgram error: {error}"}))
+                    asyncio.create_task(websocket.send_json({"error": f"Deepgram error: {err}"}))
             except RuntimeError:
                 pass
             finally:
@@ -847,7 +849,16 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
                     pass
         connection.on(DG_EVENT_ERROR, on_error)
 
-        await websocket.send_json({"type": "status", "message": "Deepgram connection established, streaming audio..."})
+        # Surface current Deepgram config to the client for visibility
+        try:
+            cfg_msg = (
+                f"Deepgram connected: model={PARAMS['model']}, lang={PARAMS['language']}, "
+                f"tier={(os.getenv('DEEPGRAM_TIER') or 'default')}, limit={TIME_LIMIT}s, "
+                f"transcript_only={TRANSCRIPT_ONLY}"
+            )
+            await websocket.send_json({"type": "status", "message": cfg_msg})
+        except Exception:
+            await websocket.send_json({"type": "status", "message": "Deepgram connection established, streaming audio..."})
 
         # Start listening with options
         try:
@@ -857,44 +868,77 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
             return
 
         # Build options from PARAMS and app audio settings
-        options = LiveOptions(
-            model=PARAMS["model"],
-            language=PARAMS["language"],
-            tier=PARAMS["tier"],
-            punctuate=PARAMS["punctuate"],
-            numerals=PARAMS["numerals"],
-            encoding="linear16",
-            sample_rate=SAMPLE_RATE,
-            channels=CHANNELS,
-            interim_results=True,
+        opts_kwargs = {
+            "model": PARAMS["model"],
+            "language": PARAMS["language"],
+            "punctuate": PARAMS["punctuate"],
+            "numerals": PARAMS["numerals"],
+            "encoding": "linear16",
+            "sample_rate": SAMPLE_RATE,
+            "channels": CHANNELS,
+            "interim_results": True,
+        }
+        # Tier may not be allowed on some accounts; include only if set via env
+        dg_tier = os.getenv("DEEPGRAM_TIER")
+        if dg_tier:
+            opts_kwargs["tier"] = dg_tier
+        options = LiveOptions(**opts_kwargs)
+
+        # Attempt to start the Deepgram websocket; surface 403 clearly
+        try:
+            connection.start(options)
+        except Exception as e:
+            msg = str(e)
+            if "403" in msg:
+                await websocket.send_json({
+                    "error": "Deepgram rejected websocket (HTTP 403). Check API key, model/tier permissions, and account access for live streaming."
+                })
+            else:
+                await websocket.send_json({"error": f"Failed to start Deepgram websocket: {msg}"})
+            return
+
+        # Stream audio to Deepgram via ffmpeg to ensure linear16 PCM, avoiding 410/format issues
+        await websocket.send_json({"type": "status", "message": "Streaming audio to Deepgram via ffmpeg..."})
+
+        ffmpeg_cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-user_agent", "Mozilla/5.0",
+            "-i", url,
+            "-vn",
+            "-f", "s16le",
+            "-acodec", "pcm_s16le",
+            "-ac", str(CHANNELS),
+            "-ar", str(SAMPLE_RATE),
+            "pipe:1",
+        ]
+
+        proc = await asyncio.create_subprocess_exec(
+            *ffmpeg_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        connection.start(options)
 
-        # Stream audio from URL to Deepgram
-        async with aiohttp.ClientSession() as session:
-            # Use the exact URL the user pasted in the UI
-            async with session.get(url) as audio_response:
-                if audio_response.status != 200:
-                    await websocket.send_json({"error": f"Failed to fetch audio: HTTP {audio_response.status}"})
-                    return
+        start_ts = asyncio.get_event_loop().time()
+        time_limit = float(TIME_LIMIT)
 
-                await websocket.send_json({"type": "status", "message": "Streaming audio to Deepgram..."})
-
-                start_ts = asyncio.get_event_loop().time()
-                time_limit = float(TIME_LIMIT)
-
-                while True:
-                    if time_limit != float('inf'):
-                        elapsed = asyncio.get_event_loop().time() - start_ts
-                        if elapsed >= time_limit:
-                            break
-
-                    data = await audio_response.content.readany()
-                    if data:
-                        # Stream raw bytes directly to Deepgram
-                        connection.send(data)
-                    else:
+        try:
+            while True:
+                if time_limit != float("inf"):
+                    elapsed = asyncio.get_event_loop().time() - start_ts
+                    if elapsed >= time_limit:
                         break
+
+                data = await proc.stdout.read(4096)
+                if not data:
+                    break
+                # Stream raw PCM bytes to Deepgram
+                connection.send(data)
+        finally:
+            try:
+                proc.terminate()
+                await proc.wait()
+            except Exception:
+                pass
 
         # Signal finish
         try:

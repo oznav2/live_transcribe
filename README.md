@@ -1,13 +1,13 @@
 # 🎙️ Live Audio Stream Transcription
 
-A real-time audio transcription application that streams audio from URLs (m3u8, video links, audio files) and transcribes them live using multiple transcription engines: **Deepgram Nova-2** (cloud), **Ivrit** (Hebrew-optimized), or **OpenAI Whisper** (local). Inspired by [Vibe](https://github.com/thewh1teagle/vibe).
+A real-time audio transcription application that streams audio from URLs (m3u8, video links, audio files) and transcribes them live using multiple transcription engines: **Deepgram Nova-3** (cloud), **Ivrit** (Hebrew-optimized), or **OpenAI Whisper** (local). Inspired by [Vibe](https://github.com/thewh1teagle/vibe).
 
 ## ✨ Features
 
 ### Core Transcription
 - **Live Streaming Transcription**: Transcribe audio as it streams, no need to download the entire file first
 - **Multiple Transcription Engines**:
-  - **Deepgram Nova-2**: Ultra-fast cloud-based transcription with <100ms latency
+  - **Deepgram Nova-3**: Ultra-fast cloud-based transcription with <100ms latency
   - **Ivrit Large V3 Turbo**: Hebrew language optimized local model
   - **OpenAI Whisper**: Local transcription with multiple model sizes (tiny, base, small, medium, large)
 - **YouTube & Video Platform Support**: Download and transcribe from YouTube, Vimeo, Facebook, Twitter, TikTok, and more using yt-dlp
