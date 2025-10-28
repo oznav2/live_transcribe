@@ -1,13 +1,15 @@
 # Multi-stage build for optimized image size
 FROM python:3.11-slim AS base
 
-# Install system dependencies including FFmpeg and build tools
+# Install system dependencies including FFmpeg, build tools, and Python pip
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     git \
     curl \
     build-essential \
     cmake \
+    python3-pip \
+    && pip3 install yt-dlp \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

@@ -114,7 +114,7 @@ def main():
         print("\nNext steps:")
         print("  1. Build Docker image: docker-compose build")
         print("  2. Start application: docker-compose up")
-        print("  3. Open browser: http://localhost:8000")
+        print("  3. Open browser: http://localhost:8009")
     else:
         print("\n⚠️  Some checks failed. Please fix the issues above.")
         sys.exit(1)

@@ -29,7 +29,7 @@ docker build -t live-transcription .
 # Run the container
 docker run -d \
   --name transcription-app \
-  -p 8000:8000 \
+  -p 8009:8009 \
   -e WHISPER_MODEL=base \
   -v whisper-models:/root/.cache/whisper \
   live-transcription
@@ -38,7 +38,7 @@ docker run -d \
 docker logs -f transcription-app
 
 # Access the app
-open http://localhost:8000
+open http://localhost:8009
 ```
 
 ### Docker Image Tags
@@ -83,10 +83,10 @@ services:
     container_name: live-transcription
     restart: always
     ports:
-      - "8000:8000"
+      - "8009:8009"
     environment:
       - WHISPER_MODEL=small  # Better accuracy for production
-      - PORT=8000
+      - PORT=8009
     volumes:
       - whisper-models:/root/.cache/whisper
     deploy:

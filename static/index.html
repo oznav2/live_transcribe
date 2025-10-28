@@ -458,6 +458,21 @@
                     <option value="zh">Chinese</option>
                     <option value="ar">Arabic</option>
                     <option value="hi">Hindi</option>
+                    <option value="he">Hebrew</option>
+                </select>
+            </div>
+
+            <!-- Model Selection -->
+            <div class="form-group">
+                <label class="form-label">Transcription Model</label>
+                <select id="modelSelect" class="form-select">
+                    <option value="deepgram">Deepgram Nova-2 (Cloud - Fastest & Best Quality) ⚡</option>
+                    <option value="large">Whisper Large (Local)</option>
+                    <option value="ivrit-large-v3-turbo">Ivrit Large V3 Turbo (Hebrew Optimized)</option>
+                    <option value="medium">Whisper Medium (Local)</option>
+                    <option value="small">Whisper Small (Local)</option>
+                    <option value="base">Whisper Base (Local)</option>
+                    <option value="tiny">Whisper Tiny (Local)</option>
                 </select>
             </div>
 
@@ -538,6 +553,7 @@
 
         const urlInput = document.getElementById('urlInput');
         const languageSelect = document.getElementById('languageSelect');
+        const modelSelect = document.getElementById('modelSelect');
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
         const clearBtn = document.getElementById('clearBtn');
@@ -589,6 +605,7 @@
             }
 
             const language = languageSelect.value || null;
+            const model = modelSelect.value || 'large';
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${protocol}//${window.location.host}/ws/transcribe`);
@@ -597,12 +614,13 @@
                 console.log('WebSocket connected');
                 updateStatus('connecting', 'Connecting to stream...');
                 
-                ws.send(JSON.stringify({ url, language }));
+                ws.send(JSON.stringify({ url, language, model }));
                 
                 startBtn.classList.add('hidden');
                 stopBtn.classList.remove('hidden');
                 urlInput.disabled = true;
                 languageSelect.disabled = true;
+                modelSelect.disabled = true;
             };
 
             ws.onmessage = (event) => {
@@ -649,6 +667,7 @@
             stopBtn.classList.add('hidden');
             urlInput.disabled = false;
             languageSelect.disabled = false;
+            modelSelect.disabled = false;
         }
 
         function clearTranscription() {

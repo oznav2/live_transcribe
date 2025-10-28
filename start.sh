@@ -48,7 +48,7 @@ echo "✅ Application started successfully!"
 echo "=========================================="
 echo ""
 echo "Access the application at:"
-echo "  🌐 http://localhost:8000"
+echo "  🌐 http://localhost:8009"
 echo ""
 echo "Useful commands:"
 echo "  View logs:    docker-compose logs -f"
@@ -60,7 +60,7 @@ echo "Waiting for application to be ready..."
 sleep 5
 
 # Check if application is responding
-if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+if curl -s http://localhost:8009/health > /dev/null 2>&1; then
     echo "✅ Application is responding and healthy!"
 else
     echo "⚠️  Application may still be starting up..."

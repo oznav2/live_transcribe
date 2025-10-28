@@ -9,11 +9,15 @@ import subprocess
 import tempfile
 import threading
 import queue
+import hashlib
+import shutil
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 import whisper
+import aiohttp
 
 # Check if whisper.cpp CLI is available
 WHISPER_CPP_PATH = os.getenv("WHISPER_CPP_PATH", "/app/whisper.cpp/build/bin/whisper-cli")
@@ -23,6 +27,17 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, HttpUrl
 import uvicorn
+
+# Deepgram configuration
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables from .env file
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+try:
+    from deepgram import DeepgramClient, LiveTranscriptionEvents, LiveOptions
+    DEEPGRAM_AVAILABLE = True
+except ImportError:
+    DEEPGRAM_AVAILABLE = False
+    logger.warning("Deepgram SDK not available. Install with: pip install deepgram-sdk")
 
 # Configure logging
 logging.basicConfig(
@@ -39,12 +54,16 @@ async def lifespan(app: FastAPI):
         logger.info(f"Loading Whisper model: {MODEL_SIZE}")
         load_model(MODEL_SIZE)
         logger.info("Default Whisper model loaded successfully")
+
+        # Initialize audio cache
+        init_cache_dir()
+        logger.info(f"Audio cache initialized (enabled: {CACHE_ENABLED})")
     except Exception as e:
         logger.error(f"Failed to load default Whisper model: {e}")
         raise
-    
+
     yield
-    
+
     # Shutdown (if needed)
     logger.info("Application shutting down")
 
@@ -64,29 +83,35 @@ MODEL_CONFIGS = {
     "small": {"type": "openai", "name": "small"},
     "medium": {"type": "openai", "name": "medium"},
     "large": {"type": "openai", "name": "large"},
-    "ivrit-large-v3-turbo": {"type": "ggml", "path": os.getenv("IVRIT_MODEL_PATH", "models/ivrit-whisper-large-v3-turbo.bin")}
+    "ivrit-large-v3-turbo": {"type": "ggml", "path": os.getenv("IVRIT_MODEL_PATH", "models/ivrit-whisper-large-v3-turbo.bin")},
+    "deepgram": {"type": "deepgram", "model": "nova-2", "language": "en"}
 }
 
 # Audio processing configuration
-CHUNK_DURATION = 30  # seconds - longer chunks for better context (was 3)
-CHUNK_OVERLAP = 5    # seconds - overlap to prevent word cutoff at boundaries
+CHUNK_DURATION = 5   # seconds - very short for fast real-time processing
+CHUNK_OVERLAP = 1    # seconds - minimal overlap
 SAMPLE_RATE = 16000  # Whisper expects 16kHz audio
 CHANNELS = 1  # Mono audio
-AUDIO_QUEUE_SIZE = 20  # Increase queue size to handle bursts
+AUDIO_QUEUE_SIZE = 50  # Large queue to handle bursts
+
+# Audio caching configuration
+CACHE_DIR = Path("cache/audio")
+CACHE_MAX_AGE_HOURS = 24  # Clean cache older than 24 hours
+CACHE_ENABLED = os.getenv("AUDIO_CACHE_ENABLED", "true").lower() == "true"
 
 
 def load_model(model_name: str):
     """Load a model based on its configuration"""
     global current_model, current_model_name
-    
+
     if model_name == current_model_name and current_model is not None:
         return current_model
-    
+
     if model_name not in MODEL_CONFIGS:
         raise ValueError(f"Unknown model: {model_name}")
-    
+
     config = MODEL_CONFIGS[model_name]
-    
+
     if config["type"] == "openai":
         logger.info(f"Loading OpenAI Whisper model: {config['name']}")
         model = whisper.load_model(config["name"])
@@ -98,10 +123,128 @@ def load_model(model_name: str):
         model = {"type": "ggml_cli", "path": config["path"], "whisper_cpp_path": WHISPER_CPP_PATH}
     else:
         raise ValueError(f"Unknown model type: {config['type']}")
-    
+
     current_model = model
     current_model_name = model_name
     return model
+
+
+def should_use_ytdlp(url: str) -> bool:
+    """Determine if URL should use yt-dlp instead of direct FFmpeg streaming"""
+    # Use yt-dlp for known video platforms and complex URLs
+    ytdlp_patterns = [
+        'youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com',
+        'facebook.com', 'twitter.com', 'twitch.tv', 'tiktok.com'
+    ]
+    return any(pattern in url.lower() for pattern in ytdlp_patterns)
+
+
+def download_audio_with_ytdlp(url: str, language: Optional[str] = None) -> Optional[str]:
+    """
+    Download and normalize audio from URL using yt-dlp
+    Returns path to normalized WAV file or None on failure
+    """
+    try:
+        # Create temporary file for download
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            output_path = temp_file.name
+
+        # yt-dlp command with audio extraction and normalization
+        cmd = [
+            'yt-dlp',
+            '--extract-audio',  # Extract audio only
+            '--audio-format', 'wav',  # Output as WAV
+            '--audio-quality', '0',  # Best quality
+            '--postprocessor-args', f'ffmpeg:-ar 16000 -ac 1 -c:a pcm_s16le',  # Normalize to Whisper format
+            '--no-playlist',  # Don't download playlists
+            '--quiet',  # Suppress output
+            '--no-warnings',  # Suppress warnings
+            '-o', output_path,
+            url
+        ]
+
+        logger.info(f"Downloading audio from URL with yt-dlp: {url}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+        if result.returncode == 0 and os.path.exists(output_path):
+            logger.info(f"Successfully downloaded and normalized audio: {output_path}")
+            return output_path
+        else:
+            logger.error(f"yt-dlp failed: {result.stderr}")
+            if os.path.exists(output_path):
+                os.unlink(output_path)
+            return None
+
+    except subprocess.TimeoutExpired:
+        logger.error("yt-dlp download timeout after 5 minutes")
+        return None
+    except Exception as e:
+        logger.error(f"yt-dlp download error: {e}")
+        return None
+
+
+# ============================================================================
+# Audio Chunk Caching
+# Note: Caching is only used for local Whisper/Ivrit models during FFmpeg
+# normalization. Deepgram uses its own separate transcription path and does
+# not use this caching mechanism.
+# ============================================================================
+
+def init_cache_dir():
+    """Initialize cache directory and clean old files"""
+    if not CACHE_ENABLED:
+        return
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Clean old cache files
+    cutoff_time = datetime.now() - timedelta(hours=CACHE_MAX_AGE_HOURS)
+    cleaned_count = 0
+
+    for cache_file in CACHE_DIR.glob("*.wav"):
+        try:
+            file_time = datetime.fromtimestamp(cache_file.stat().st_mtime)
+            if file_time < cutoff_time:
+                cache_file.unlink()
+                cleaned_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to clean cache file {cache_file}: {e}")
+
+    if cleaned_count > 0:
+        logger.info(f"Cleaned {cleaned_count} old cache files")
+
+
+def generate_cache_key(audio_data: bytes, sample_rate: int, channels: int) -> str:
+    """Generate cache key from audio data and parameters"""
+    hasher = hashlib.sha256()
+    hasher.update(audio_data)
+    hasher.update(f"{sample_rate}:{channels}".encode())
+    return hasher.hexdigest()
+
+
+def get_cached_audio(cache_key: str) -> Optional[str]:
+    """Get cached normalized audio file if it exists"""
+    if not CACHE_ENABLED:
+        return None
+
+    cache_path = CACHE_DIR / f"{cache_key}.wav"
+    if cache_path.exists():
+        logger.debug(f"Cache hit for {cache_key}")
+        return str(cache_path)
+    return None
+
+
+def save_to_cache(cache_key: str, audio_path: str) -> None:
+    """Save normalized audio to cache"""
+    if not CACHE_ENABLED:
+        return
+
+    try:
+        cache_path = CACHE_DIR / f"{cache_key}.wav"
+        shutil.copy2(audio_path, cache_path)
+        logger.debug(f"Cached audio as {cache_key}")
+    except Exception as e:
+        logger.warning(f"Failed to cache audio: {e}")
 
 
 class TranscriptionRequest(BaseModel):
@@ -220,8 +363,14 @@ class AudioStreamProcessor:
 
 
 async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamProcessor):
-    """Transcribe audio chunks and send results via WebSocket"""
-    
+    """
+    Transcribe audio chunks and send results via WebSocket
+
+    Note: This function is only used for local Whisper/Ivrit models with FFmpeg streaming.
+    Deepgram transcription uses a separate function (transcribe_with_deepgram) and does not
+    use this audio caching mechanism.
+    """
+
     # Load the model for this processor
     try:
         model = load_model(processor.model_name)
@@ -236,33 +385,53 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
             try:
                 # Get audio chunk from queue (with timeout)
                 audio_data = processor.audio_queue.get(timeout=1)
-                
-                # Save and normalize audio chunk for Whisper
-                with tempfile.NamedTemporaryFile(suffix='.raw', delete=False) as temp_audio:
-                    temp_raw = temp_audio.name
-                    temp_audio.write(audio_data)
 
-                # Normalize to 16kHz mono WAV (required by Whisper)
-                temp_path = temp_raw.replace('.raw', '.wav')
-                normalize_cmd = [
-                    'ffmpeg',
-                    '-f', 's16le',  # Input: signed 16-bit PCM
-                    '-ar', str(SAMPLE_RATE),  # Input sample rate
-                    '-ac', str(CHANNELS),  # Input channels
-                    '-i', temp_raw,
-                    '-ar', '16000',  # Whisper requires 16kHz
-                    '-ac', '1',  # Mono
-                    '-c:a', 'pcm_s16le',  # 16-bit PCM
-                    '-y',  # Overwrite
-                    temp_path
-                ]
-                norm_result = subprocess.run(normalize_cmd, capture_output=True)
-                if norm_result.returncode != 0:
-                    logger.error(f"FFmpeg normalization failed: {norm_result.stderr.decode()}")
-                    os.unlink(temp_raw)
-                    continue
+                # Generate cache key for this audio chunk
+                cache_key = generate_cache_key(audio_data, SAMPLE_RATE, CHANNELS)
 
-                os.unlink(temp_raw)  # Clean up raw file
+                # Check cache first
+                cached_path = get_cached_audio(cache_key)
+                if cached_path:
+                    temp_path = cached_path
+                    logger.debug("Using cached normalized audio")
+                else:
+                    # Not in cache - normalize with FFmpeg
+                    with tempfile.NamedTemporaryFile(suffix='.raw', delete=False) as temp_audio:
+                        temp_raw = temp_audio.name
+                        temp_audio.write(audio_data)
+
+                    # Normalize to 16kHz mono WAV (required by Whisper)
+                    temp_path = temp_raw.replace('.raw', '.wav')
+                    normalize_cmd = [
+                        'ffmpeg',
+                        '-f', 's16le',  # Input: signed 16-bit PCM
+                        '-ar', str(SAMPLE_RATE),  # Input sample rate
+                        '-ac', str(CHANNELS),  # Input channels
+                        '-i', temp_raw,
+                        '-ar', '16000',  # Whisper requires 16kHz
+                        '-ac', '1',  # Mono
+                        '-c:a', 'pcm_s16le',  # 16-bit PCM
+                        '-y',  # Overwrite
+                        temp_path
+                    ]
+                    # Run FFmpeg asynchronously to avoid blocking
+                    norm_process = await asyncio.create_subprocess_exec(
+                        *normalize_cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    _, norm_stderr = await norm_process.communicate()
+
+                    if norm_process.returncode != 0:
+                        error_msg = norm_stderr.decode() if norm_stderr else "Unknown error"
+                        logger.error(f"FFmpeg normalization failed: {error_msg}")
+                        os.unlink(temp_raw)
+                        continue
+
+                    os.unlink(temp_raw)  # Clean up raw file
+
+                    # Save to cache for future use
+                    save_to_cache(cache_key, temp_path)
                 
                 try:
                     # Transcribe audio chunk
@@ -279,41 +448,48 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                         transcription_text = result.get('text', '').strip()
                         detected_language = result.get('language', 'unknown')
                     elif model_config["type"] == "ggml":
-                        # Use whisper.cpp CLI with JSON output for reliable parsing
+                        # Use whisper.cpp CLI - output text directly instead of JSON
+                        # The -oj flag has issues with mixed output, so we use plain text output
                         cmd = [
                             model["whisper_cpp_path"],
                             "-m", model["path"],
                             "-f", temp_path,
-                            "-oj",  # Output JSON format
+                            "-nt",  # No timestamps in output (plain text)
+                            "-t", "4",  # Use 4 threads for faster processing
+                            "-bs", "1",  # Beam size 1 (greedy decoding - FASTEST)
                             "--no-prints"  # Suppress debug output to stderr
                         ]
                         if processor.language:
                             cmd.extend(["-l", processor.language])
 
-                        # Run command and capture JSON output
-                        result = subprocess.run(cmd, capture_output=True, text=True)
-                        if result.returncode == 0:
-                            try:
-                                # Parse JSON output
-                                import json
-                                data = json.loads(result.stdout)
+                        # Run command asynchronously to avoid blocking the event loop
+                        process = await asyncio.create_subprocess_exec(
+                            *cmd,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE
+                        )
+                        stdout, stderr = await process.communicate()
 
-                                # Extract transcription from JSON structure
-                                # whisper.cpp JSON format: {"transcription": [{"text": "...", "timestamps": {...}}]}
-                                if 'transcription' in data:
-                                    segments = data['transcription']
-                                    transcription_text = ' '.join([seg.get('text', '').strip() for seg in segments])
-                                else:
-                                    # Fallback: whole output might be the text
-                                    transcription_text = data.get('text', '').strip()
+                        if process.returncode == 0:
+                            # whisper.cpp outputs text directly to stdout
+                            # Clean up the output - remove extra whitespace and newlines
+                            transcription_text = stdout.decode('utf-8').strip() if stdout else ""
 
-                                logger.debug(f"Extracted transcription from JSON: '{transcription_text}'")
-                            except json.JSONDecodeError as e:
-                                logger.error(f"Failed to parse whisper.cpp JSON: {e}")
-                                logger.debug(f"Raw output: {result.stdout[:500]}")
-                                transcription_text = ""
+                            # Remove any debug/status lines that might be present
+                            lines = [line.strip() for line in transcription_text.split('\n') if line.strip()]
+                            # Filter out lines that look like debug output (contain brackets, percentages, etc.)
+                            content_lines = [
+                                line for line in lines
+                                if not line.startswith('[')
+                                and not '%]' in line
+                                and not line.startswith('whisper_')
+                            ]
+                            transcription_text = ' '.join(content_lines)
+
+                            logger.debug(f"Extracted transcription: '{transcription_text[:100]}...'")
                         else:
-                            logger.error(f"whisper.cpp error: {result.stderr}")
+                            error_msg = stderr.decode('utf-8') if stderr else "Unknown error"
+                            logger.error(f"whisper.cpp error: {error_msg}")
                             transcription_text = ""
                         detected_language = processor.language or 'he'  # Default to Hebrew for Ivrit model
                     
@@ -354,6 +530,91 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
         await websocket.send_json({"error": str(e)})
 
 
+async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Optional[str] = None):
+    """Transcribe audio stream using Deepgram live transcription"""
+    if not DEEPGRAM_AVAILABLE:
+        await websocket.send_json({"error": "Deepgram SDK not available"})
+        return
+
+    try:
+        # Initialize Deepgram client
+        deepgram = DeepgramClient(DEEPGRAM_API_KEY)
+
+        # Configure live transcription options
+        options = LiveOptions(
+            model="nova-2",
+            language=language or "en",
+            punctuate=True,
+            interim_results=False,
+            encoding="linear16",
+            sample_rate=16000,
+            channels=1
+        )
+
+        # Create Deepgram connection
+        dg_connection = deepgram.listen.live.v("1")
+
+        # Set up event handlers
+        def on_message(self, result, **kwargs):
+            sentence = result.channel.alternatives[0].transcript
+            if sentence:
+                asyncio.create_task(websocket.send_json({
+                    "type": "transcription",
+                    "text": sentence,
+                    "language": language or "en"
+                }))
+                logger.info(f"✓ Sent Deepgram transcription: {sentence[:100]}...")
+
+        def on_error(self, error, **kwargs):
+            logger.error(f"Deepgram error: {error}")
+            asyncio.create_task(websocket.send_json({"error": f"Deepgram error: {error}"}))
+
+        def on_close(self, close, **kwargs):
+            logger.info("Deepgram connection closed")
+            asyncio.create_task(websocket.send_json({"type": "complete", "message": "Transcription complete"}))
+
+        # Register event handlers
+        dg_connection.on(LiveTranscriptionEvents.Transcript, on_message)
+        dg_connection.on(LiveTranscriptionEvents.Error, on_error)
+        dg_connection.on(LiveTranscriptionEvents.Close, on_close)
+
+        # Start Deepgram connection
+        if not await dg_connection.start(options):
+            await websocket.send_json({"error": "Failed to start Deepgram connection"})
+            return
+
+        await websocket.send_json({"type": "status", "message": "Deepgram connection established, streaming audio..."})
+
+        # Stream audio from URL to Deepgram
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as audio_response:
+                if audio_response.status != 200:
+                    await websocket.send_json({"error": f"Failed to fetch audio: HTTP {audio_response.status}"})
+                    return
+
+                await websocket.send_json({"type": "status", "message": "Streaming audio to Deepgram..."})
+
+                # Stream audio chunks
+                async for chunk in audio_response.content.iter_chunked(8192):
+                    if chunk:
+                        dg_connection.send(chunk)
+                    # Check if client disconnected
+                    try:
+                        await asyncio.wait_for(websocket.receive_text(), timeout=0.001)
+                        break  # Client sent message, likely disconnect
+                    except asyncio.TimeoutError:
+                        continue  # No message, keep streaming
+                    except WebSocketDisconnect:
+                        break
+
+        # Finish Deepgram connection
+        await dg_connection.finish()
+
+    except Exception as e:
+        logger.error(f"Deepgram transcription error: {e}")
+        await websocket.send_json({"error": f"Deepgram error: {str(e)}"})
+
+
 @app.get("/", response_class=HTMLResponse)
 async def get_home():
     """Serve the main web interface"""
@@ -367,40 +628,118 @@ async def websocket_transcribe(websocket: WebSocket):
     await websocket.accept()
     processor = None
     audio_thread = None
-    
+
     try:
         # Receive transcription request
         data = await websocket.receive_json()
         url = data.get("url")
         language = data.get("language")
-        model_name = data.get("model", "large")  # Default to large model
-        
+        model_name = data.get("model", "ivrit-large-v3-turbo")
+
         if not url:
             await websocket.send_json({"error": "URL is required"})
             return
-        
+
         logger.info(f"Starting transcription for URL: {url} with model: {model_name}")
+
+        # Check if user selected Deepgram
+        if model_name == "deepgram":
+            await transcribe_with_deepgram(websocket, url, language)
+            return
+
+        # Check if we should use yt-dlp or direct streaming
+        if should_use_ytdlp(url):
+            await websocket.send_json({"type": "status", "message": "Downloading audio with yt-dlp..."})
+
+            # Download entire file first with yt-dlp
+            audio_file = download_audio_with_ytdlp(url, language)
+            if not audio_file:
+                await websocket.send_json({"error": "Failed to download audio from URL"})
+                return
+
+            # Transcribe the downloaded file directly (not streaming)
+            await websocket.send_json({"type": "status", "message": "Transcribing downloaded audio..."})
+
+            try:
+                model = load_model(model_name)
+                model_config = MODEL_CONFIGS[model_name]
+
+                if model_config["type"] == "openai":
+                    result = model.transcribe(audio_file, language=language, fp16=False, verbose=False)
+                    transcription_text = result.get('text', '').strip()
+                    detected_language = result.get('language', 'unknown')
+                elif model_config["type"] == "ggml":
+                    # Use whisper.cpp CLI - output text directly instead of JSON
+                    cmd = [
+                        model["whisper_cpp_path"],
+                        "-m", model["path"],
+                        "-f", audio_file,
+                        "-nt",  # No timestamps in output (plain text)
+                        "-t", "4",  # Use 4 threads for faster processing
+                        "-bs", "1",  # Beam size 1 (greedy decoding - FASTEST)
+                        "--no-prints"
+                    ]
+                    if language:
+                        cmd.extend(["-l", language])
+
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    if result.returncode == 0:
+                        # whisper.cpp outputs text directly to stdout
+                        transcription_text = result.stdout.strip()
+
+                        # Remove any debug/status lines
+                        lines = [line.strip() for line in transcription_text.split('\n') if line.strip()]
+                        content_lines = [
+                            line for line in lines
+                            if not line.startswith('[')
+                            and not '%]' in line
+                            and not line.startswith('whisper_')
+                        ]
+                        transcription_text = ' '.join(content_lines)
+                        logger.debug(f"yt-dlp transcription: '{transcription_text[:100]}...'")
+                    else:
+                        logger.error(f"whisper.cpp error: {result.stderr}")
+                        transcription_text = ""
+                    detected_language = language or 'he'  # Default to Hebrew for Ivrit model
+
+                if transcription_text:
+                    await websocket.send_json({
+                        "type": "transcription",
+                        "text": transcription_text,
+                        "language": detected_language
+                    })
+
+                await websocket.send_json({"type": "complete", "message": "Transcription complete"})
+
+            finally:
+                # Cleanup downloaded file
+                if os.path.exists(audio_file):
+                    os.unlink(audio_file)
+
+            return
+
+        # Otherwise, use direct FFmpeg streaming (existing code)
         await websocket.send_json({"type": "status", "message": "Starting audio stream..."})
-        
+
         # Create audio processor
         processor = AudioStreamProcessor(url, language, model_name)
-        
+
         # Start FFmpeg stream
         if not processor.start_ffmpeg_stream():
             await websocket.send_json({"error": "Failed to start audio stream"})
             return
-        
+
         processor.is_running = True
-        
+
         # Start audio reading thread
         audio_thread = threading.Thread(target=processor.read_audio_chunks, daemon=True)
         audio_thread.start()
-        
+
         await websocket.send_json({"type": "status", "message": "Stream started, transcribing..."})
-        
+
         # Start transcription
         await transcribe_audio_stream(websocket, processor)
-        
+
     except WebSocketDisconnect:
         logger.info("Client disconnected")
     except Exception as e:
@@ -425,6 +764,43 @@ async def health_check():
         "whisper_model": current_model_name or MODEL_SIZE,
         "model_loaded": current_model is not None
     }
+
+
+@app.get("/api/cache/stats")
+async def cache_stats():
+    """Get cache statistics"""
+    if not CACHE_ENABLED:
+        return {"enabled": False}
+
+    try:
+        cache_files = list(CACHE_DIR.glob("*.wav"))
+        total_size = sum(f.stat().st_size for f in cache_files)
+
+        return {
+            "enabled": True,
+            "file_count": len(cache_files),
+            "total_size_mb": round(total_size / (1024 * 1024), 2),
+            "max_age_hours": CACHE_MAX_AGE_HOURS
+        }
+    except Exception as e:
+        return {"enabled": True, "error": str(e)}
+
+
+@app.post("/api/cache/clear")
+async def clear_cache():
+    """Clear all cached audio files"""
+    if not CACHE_ENABLED:
+        return {"enabled": False}
+
+    try:
+        deleted_count = 0
+        for cache_file in CACHE_DIR.glob("*.wav"):
+            cache_file.unlink()
+            deleted_count += 1
+
+        return {"success": True, "deleted": deleted_count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

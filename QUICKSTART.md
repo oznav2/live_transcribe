@@ -36,7 +36,7 @@ docker-compose up --build
 
 ### Step 3: Open Your Browser
 
-Navigate to: **http://localhost:8000**
+Navigate to: **http://localhost:8009**
 
 ---
 
@@ -73,7 +73,7 @@ When you start the app for the first time:
 
 ### Check if Running
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:8009/health
 ```
 
 ### View Logs
