@@ -22,6 +22,7 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
 env/
 ENV/
 
@@ -33,6 +34,9 @@ ENV/
 models/
 *.pt
 *.bin
+*.safetensors
+ggml-model.bin
+whisper-large-v3-turbo/
 
 # Audio processing temp files
 temp/
