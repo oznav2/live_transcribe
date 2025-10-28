@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 
 import whisper
 import aiohttp
+import torch
 
 # Check if whisper.cpp CLI is available
 WHISPER_CPP_PATH = os.getenv("WHISPER_CPP_PATH", "/app/whisper.cpp/build/bin/whisper-cli")
@@ -114,7 +115,13 @@ def load_model(model_name: str):
 
     if config["type"] == "openai":
         logger.info(f"Loading OpenAI Whisper model: {config['name']}")
-        model = whisper.load_model(config["name"])
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Using device: {device} (CUDA available: {torch.cuda.is_available()})")
+        try:
+            model = whisper.load_model(config["name"], device=device)
+        except Exception as e:
+            logger.warning(f"Failed to load model on {device}: {e}. Falling back to CPU.")
+            model = whisper.load_model(config["name"], device="cpu")
     elif config["type"] == "ggml":
         if not WHISPER_CPP_AVAILABLE:
             raise ValueError(f"whisper.cpp CLI not found at: {WHISPER_CPP_PATH}")
@@ -439,26 +446,42 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                     
                     if model_config["type"] == "openai":
                         # Use OpenAI Whisper
-                        result = model.transcribe(
-                            temp_path,
-                            language=processor.language,
-                            fp16=False,  # CPU compatibility
-                            verbose=False
-                        )
+                        use_fp16 = torch.cuda.is_available()
+                        try:
+                            result = model.transcribe(
+                                temp_path,
+                                language=processor.language,
+                                fp16=use_fp16,
+                                verbose=False
+                            )
+                        except Exception as e:
+                            logger.warning(f"GPU/FP16 transcribe failed: {e}. Retrying with fp16=False.")
+                            result = model.transcribe(
+                                temp_path,
+                                language=processor.language,
+                                fp16=False,
+                                verbose=False
+                            )
                         transcription_text = result.get('text', '').strip()
                         detected_language = result.get('language', 'unknown')
                     elif model_config["type"] == "ggml":
                         # Use whisper.cpp CLI - output text directly instead of JSON
                         # The -oj flag has issues with mixed output, so we use plain text output
+                        threads = os.getenv("WHISPER_CPP_THREADS", "4")
                         cmd = [
                             model["whisper_cpp_path"],
                             "-m", model["path"],
                             "-f", temp_path,
                             "-nt",  # No timestamps in output (plain text)
-                            "-t", "4",  # Use 4 threads for faster processing
+                            "-t", threads,  # Use env-configured threads (default 4)
                             "-bs", "1",  # Beam size 1 (greedy decoding - FASTEST)
                             "--no-prints"  # Suppress debug output to stderr
                         ]
+                        # Enable GPU offload and flash-attn when CUDA is available, else disable GPU explicitly
+                        if torch.cuda.is_available():
+                            cmd.append("-fa")
+                        else:
+                            cmd.append("-ng")
                         if processor.language:
                             cmd.extend(["-l", processor.language])
 
@@ -665,7 +688,12 @@ async def websocket_transcribe(websocket: WebSocket):
                 model_config = MODEL_CONFIGS[model_name]
 
                 if model_config["type"] == "openai":
-                    result = model.transcribe(audio_file, language=language, fp16=False, verbose=False)
+                    use_fp16 = torch.cuda.is_available()
+                    try:
+                        result = model.transcribe(audio_file, language=language, fp16=use_fp16, verbose=False)
+                    except Exception as e:
+                        logger.warning(f"GPU/FP16 ytdlp transcribe failed: {e}. Retrying with fp16=False.")
+                        result = model.transcribe(audio_file, language=language, fp16=False, verbose=False)
                     transcription_text = result.get('text', '').strip()
                     detected_language = result.get('language', 'unknown')
                 elif model_config["type"] == "ggml":
@@ -763,6 +791,39 @@ async def health_check():
         "status": "healthy",
         "whisper_model": current_model_name or MODEL_SIZE,
         "model_loaded": current_model is not None
+    }
+
+
+@app.get("/gpu")
+async def gpu_diagnostics():
+    """GPU diagnostics endpoint"""
+    cuda_available = torch.cuda.is_available()
+    device_count = torch.cuda.device_count() if cuda_available else 0
+    cuda_version = torch.version.cuda if hasattr(torch.version, "cuda") else None
+    devices = []
+    for idx in range(device_count):
+        try:
+            props = torch.cuda.get_device_properties(idx)
+            devices.append({
+                "index": idx,
+                "name": props.name,
+                "total_memory_mb": round(props.total_memory / (1024 * 1024), 2),
+                "multi_processor_count": props.multi_processor_count,
+                "major": props.major,
+                "minor": props.minor,
+            })
+        except Exception as e:
+            devices.append({"index": idx, "error": str(e)})
+
+    return {
+        "cuda_available": cuda_available,
+        "cuda_version": cuda_version,
+        "device_count": device_count,
+        "devices": devices,
+        "env": {
+            "CUDA_VISIBLE_DEVICES": os.getenv("CUDA_VISIBLE_DEVICES"),
+            "NVIDIA_VISIBLE_DEVICES": os.getenv("NVIDIA_VISIBLE_DEVICES"),
+        }
     }
 
 

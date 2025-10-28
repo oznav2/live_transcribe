@@ -179,6 +179,45 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions.
 - GPU with CUDA support
 - 20GB disk space
 
+## ⚡ GPU Acceleration
+
+Enable NVIDIA GPU acceleration for faster local transcription with whisper.cpp. This setup follows a Vibe-style approach adapted for this project.
+
+- Build whisper.cpp with CUDA in Docker:
+  - Uses a CUDA-enabled builder stage that compiles whisper.cpp with `-DGGML_CUDA=1` (optional: `-DGGML_CUBLAS=1`).
+  - For newer GPUs, set `CMAKE_CUDA_ARCHITECTURES` (e.g., `86;89;90`) during CMake configure.
+- Runtime flags for whisper.cpp CLI:
+  - GPU is enabled by default; explicitly turn off with `-ng`/`--no-gpu`.
+  - Flash attention: enable with `-fa`/`--flash-attn` (default true), disable with `-nfa`/`--no-flash-attn`.
+- Recommended environment variables:
+  - `CUDA_VISIBLE_DEVICES=0` to pin to a specific GPU.
+  - `WHISPER_CPP_THREADS=4` to tune CPU threads used alongside GPU.
+  - `WHISPER_MODEL` to pick the GGML model (e.g., `ivrit-large-v3-turbo`).
+- Docker Compose (requires host NVIDIA drivers and nvidia-container-toolkit):
+  - Compose device reservations:
+    ```yaml
+    services:
+      app:
+        build: .
+        environment:
+          - CUDA_VISIBLE_DEVICES=0
+        deploy:
+          resources:
+            reservations:
+              devices:
+                - driver: nvidia
+                  count: 1
+                  capabilities: [gpu]
+    ```
+  - Or with docker run: `docker run --gpus all -e CUDA_VISIBLE_DEVICES=0 ...`
+- Verification steps:
+  - Confirm GPU visibility: `docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi`.
+  - App health: `curl http://localhost:8009/health`.
+
+Notes:
+- Flash attention improves throughput on many GPUs; disable it with `--no-flash-attn` if you hit compatibility issues.
+- Ensure CUDA toolkit/runtime compatibility with your host drivers; this project aligns CUDA 11.8 with PyTorch `cu118` wheels.
+
 ---
 
 ## 🔌 API Endpoints

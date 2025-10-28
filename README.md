@@ -247,15 +247,37 @@ CHUNK_OVERLAP = 1    # seconds - context preservation
 
 ### GPU Acceleration
 
-For NVIDIA GPUs with CUDA support:
+Enable NVIDIA GPU acceleration for faster local transcription with whisper.cpp. This project aligns CUDA 11.8 with PyTorch `cu118` wheels.
 
-1. Use `nvidia/cuda` base image in Dockerfile
-2. Install PyTorch with CUDA support
-3. Set environment variable in docker-compose.yml:
-   ```yaml
-   environment:
-     - CUDA_VISIBLE_DEVICES=0
-   ```
+- Build whisper.cpp with CUDA in Docker:
+  - CUDA-enabled builder compiles whisper.cpp with `-DGGML_CUDA=1` (optional: `-DGGML_CUBLAS=1`).
+  - For newer GPUs, set `CMAKE_CUDA_ARCHITECTURES` (e.g., `86;89;90`) during CMake configure.
+- Runtime flags for whisper.cpp CLI:
+  - GPU is enabled by default; explicitly disable with `-ng`/`--no-gpu`.
+  - Flash attention: ensure with `-fa`/`--flash-attn` (default true), disable with `-nfa`/`--no-flash-attn`.
+- Environment variables:
+  - `CUDA_VISIBLE_DEVICES=0` to select GPU.
+  - `WHISPER_CPP_THREADS=4` to tune CPU threads used alongside GPU.
+  - `WHISPER_MODEL` to choose GGML model (e.g., `ivrit-large-v3-turbo`).
+- Docker Compose (requires host NVIDIA drivers and nvidia-container-toolkit):
+  ```yaml
+  services:
+    app:
+      build: .
+      environment:
+        - CUDA_VISIBLE_DEVICES=0
+      deploy:
+        resources:
+          reservations:
+            devices:
+              - driver: nvidia
+                count: 1
+                capabilities: [gpu]
+  ```
+- Or with docker run: `docker run --gpus all -e CUDA_VISIBLE_DEVICES=0 ...`
+- Verify:
+  - `docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi`
+  - `curl http://localhost:8009/health`
 
 ## 🐛 Troubleshooting
 

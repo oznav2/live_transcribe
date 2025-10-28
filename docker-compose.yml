@@ -12,6 +12,8 @@ services:
       # ivrit-large-v3-turbo: Hebrew-optimized GGML model
       - WHISPER_MODEL=ivrit-large-v3-turbo
       - PORT=8009
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
     volumes:
       # Cache Whisper models to avoid re-downloading
       - whisper-models:/root/.cache/whisper
@@ -24,6 +26,14 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    runtime: nvidia
 
 volumes:
   whisper-models:
