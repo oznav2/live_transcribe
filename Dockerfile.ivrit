@@ -54,7 +54,15 @@ RUN python3 -c "import torch; print('PyTorch version:', torch.__version__, 'CUDA
 RUN python3 -c "import faster_whisper; print('faster_whisper installed successfully')"
 RUN python3 -c "import ivrit; print('ivrit package installed successfully')"
 RUN python3 -c "from deepgram import DeepgramClient; print('Deepgram SDK installed')"
-RUN python3 -c "try: import whisper; print('WARNING: openai-whisper found - this may conflict with faster-whisper'); except: print('✓ openai-whisper not installed - using faster-whisper only (recommended)')"
+# Check if openai-whisper is installed (we don't want it)
+RUN python3 -c "import sys; \
+try: \
+    import whisper; \
+    print('WARNING: openai-whisper found - this may conflict with faster-whisper'); \
+    sys.exit(0); \
+except ImportError: \
+    print('✓ openai-whisper not installed - using faster-whisper only (recommended)'); \
+    sys.exit(0)"
 
 # Copy application code
 COPY app.py .
