@@ -19,23 +19,28 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from uuid import uuid4
 
-try:
-    import whisper
-    OPENAI_WHISPER_AVAILABLE = True
-except ImportError:
-    OPENAI_WHISPER_AVAILABLE = False
-    print("openai-whisper not available - OpenAI Whisper models will not work")
-
-import aiohttp
-import torch
-
-# Try to import faster_whisper for Ivrit CT2 models
+# Primary: Import faster_whisper for Ivrit CT2 models (recommended)
 try:
     import faster_whisper
     FASTER_WHISPER_AVAILABLE = True
 except ImportError:
     FASTER_WHISPER_AVAILABLE = False
-    print("faster_whisper not available - Ivrit CT2 models will not work")
+    print("ERROR: faster_whisper not available - Ivrit CT2 models will not work")
+    print("Install with: pip install faster-whisper>=1.1.1")
+
+# Optional: Import openai-whisper (not recommended - may conflict with faster-whisper)
+try:
+    import whisper
+    OPENAI_WHISPER_AVAILABLE = True
+    if FASTER_WHISPER_AVAILABLE:
+        print("WARNING: Both openai-whisper and faster-whisper are installed. This may cause conflicts.")
+        print("Recommendation: Use only faster-whisper for better performance and to avoid conflicts.")
+except ImportError:
+    OPENAI_WHISPER_AVAILABLE = False
+    # This is actually preferred - we don't need openai-whisper
+
+import aiohttp
+import torch
 
 # Try to import ivrit package
 try:
@@ -213,8 +218,10 @@ if FASTER_WHISPER_AVAILABLE:
 else:
     logger.error("faster_whisper is not available! Please install it with: pip install faster-whisper")
 
-# Optional: OpenAI Whisper models (if available)
-if OPENAI_WHISPER_AVAILABLE:
+# Optional: OpenAI Whisper models (NOT RECOMMENDED - may conflict with faster-whisper)
+if OPENAI_WHISPER_AVAILABLE and not FASTER_WHISPER_AVAILABLE:
+    # Only add OpenAI models if faster-whisper is not available
+    logger.warning("Using openai-whisper models. Consider switching to faster-whisper for better performance.")
     MODEL_CONFIGS.update({
         "tiny": {"type": "openai", "name": "tiny"},
         "base": {"type": "openai", "name": "base"},
@@ -222,6 +229,9 @@ if OPENAI_WHISPER_AVAILABLE:
         "medium": {"type": "openai", "name": "medium"},
         "large": {"type": "openai", "name": "large"},
     })
+elif OPENAI_WHISPER_AVAILABLE and FASTER_WHISPER_AVAILABLE:
+    # Both are available - skip OpenAI models to avoid conflicts
+    logger.info("Skipping OpenAI Whisper models to avoid conflicts with faster-whisper")
 
 # Optional: Deepgram API (if configured)
 if DEEPGRAM_AVAILABLE and DEEPGRAM_API_KEY:

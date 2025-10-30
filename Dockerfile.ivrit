@@ -31,10 +31,13 @@ RUN pip install --no-cache-dir -r requirements.ivrit.txt
 # Install yt-dlp separately to ensure latest version
 RUN pip install --no-cache-dir yt-dlp
 
-# Optional: Install openai-whisper for fallback support (with error handling)
-# This is installed separately to avoid conflicts with faster-whisper
-# The app.py handles missing openai-whisper gracefully
-RUN pip install --no-cache-dir openai-whisper==20231117 || echo "openai-whisper installation skipped - app will use faster-whisper models only"
+# NOTE: We do NOT install openai-whisper to avoid conflicts with faster-whisper
+# faster-whisper is superior for our use case:
+# - 2-4x faster performance
+# - Lower memory usage
+# - Better optimized for production
+# - Ivrit models are in CT2 format specifically for faster-whisper
+# The app.py handles missing openai-whisper gracefully and will use faster-whisper
 
 # Pre-download and cache Ivrit models during build
 # This ensures models are available immediately at runtime
@@ -51,7 +54,7 @@ RUN python3 -c "import torch; print('PyTorch version:', torch.__version__, 'CUDA
 RUN python3 -c "import faster_whisper; print('faster_whisper installed successfully')"
 RUN python3 -c "import ivrit; print('ivrit package installed successfully')"
 RUN python3 -c "from deepgram import DeepgramClient; print('Deepgram SDK installed')"
-RUN python3 -c "try: import whisper; print('openai-whisper installed successfully'); except: print('openai-whisper not installed - using faster-whisper only')"
+RUN python3 -c "try: import whisper; print('WARNING: openai-whisper found - this may conflict with faster-whisper'); except: print('✓ openai-whisper not installed - using faster-whisper only (recommended)')"
 
 # Copy application code
 COPY app.py .
