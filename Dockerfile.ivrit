@@ -62,26 +62,13 @@ RUN python3 -c "import importlib.util; spec = importlib.util.find_spec('whisper'
 COPY app.py .
 COPY static/ ./static/
 
-# Create necessary directories
-RUN mkdir -p /root/.cache/whisper && \
-    mkdir -p /app/models && \
-    mkdir -p /app/cache/audio && \
+# Create necessary directories for the application
+# Note: We're NOT creating /root/.cache/whisper since we don't use openai-whisper
+# Note: We're NOT creating whisper.cpp directories since we don't use GGML models
+RUN mkdir -p /app/cache/audio && \
     mkdir -p /app/cache/downloads && \
     mkdir -p /app/cache/captures && \
     mkdir -p /app/logs
-
-# OPTIONAL: whisper.cpp support (not required for Ivrit CT2 models)
-# The app will work without whisper.cpp - it's only needed for GGML models
-# Note: whisper.cpp/GGML support is being phased out in favor of faster_whisper/CT2 models
-# which provide better performance and quality
-
-# Create directory structure (will remain empty if whisper.cpp not available)
-RUN mkdir -p /app/whisper.cpp/build/bin /app/whisper.cpp/build/src /app/whisper.cpp/build/ggml/src
-
-# Note: To enable GGML model support, you would need to:
-# 1. Build whisper.cpp and copy the binaries during docker build
-# 2. Copy the GGML model file (e.g., ivrit-whisper-large-v3-turbo.bin)
-# Since whisper.cpp is not available by default, GGML models won't be available
 
 # Expose port
 EXPOSE 8009
@@ -101,10 +88,8 @@ ENV AUDIO_CACHE_ENABLED=true
 # CUDA settings
 ENV CUDA_VISIBLE_DEVICES=0
 ENV NVIDIA_VISIBLE_DEVICES=all
-# Note: GGML/whisper.cpp paths are not set by default since whisper.cpp is optional
-# To use GGML models, you would need to provide whisper.cpp binaries and set:
-# ENV WHISPER_CPP_PATH=/app/whisper.cpp/build/bin/whisper-cli
-# ENV IVRIT_MODEL_PATH=/app/models/ivrit-whisper-large-v3-turbo.bin
+# Note: This app uses only faster_whisper with CT2 models for optimal performance
+# GGML/whisper.cpp support has been completely removed
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=3 \
