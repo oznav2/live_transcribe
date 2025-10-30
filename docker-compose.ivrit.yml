@@ -11,12 +11,11 @@ services:
     env_file:
       - .env
     environment:
-      # Model selection - use new Ivrit CT2 models for better quality
+      # Model selection - using faster_whisper CT2 models for best quality
       # Options: 
-      #   - ivrit-ct2 (default, best Hebrew)
-      #   - ivrit-v3-turbo (Hebrew optimized)
-      #   - whisper-v3-turbo (general v3 turbo)
-      #   - ivrit-large-v3-turbo (old GGML fallback)
+      #   - ivrit-ct2 (default, best for Hebrew transcription)
+      #   - ivrit-v3-turbo (alias for ivrit-ct2)
+      #   - whisper-v3-turbo (general v3 turbo model)
       - WHISPER_MODEL=ivrit-ct2
       - IVRIT_MODEL_NAME=ivrit-ai/whisper-large-v3-turbo-ct2
       - IVRIT_MODEL_TYPE=ct2

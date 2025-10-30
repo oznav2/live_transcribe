@@ -36,10 +36,12 @@ RUN pip install --no-cache-dir yt-dlp
 # The app.py handles missing openai-whisper gracefully
 RUN pip install --no-cache-dir openai-whisper==20231117 || echo "openai-whisper installation skipped - app will use faster-whisper models only"
 
-# Pre-download and cache Ivrit models during build (with error handling)
+# Pre-download and cache Ivrit models during build
 # This ensures models are available immediately at runtime
-RUN python3 -c "import faster_whisper; print('Loading ivrit-ai/whisper-large-v3-turbo-ct2...'); m = faster_whisper.WhisperModel('ivrit-ai/whisper-large-v3-turbo-ct2', device='cpu', compute_type='int8')" || echo "Ivrit model download skipped"
-RUN python3 -c "import faster_whisper; print('Loading large-v3-turbo...'); m = faster_whisper.WhisperModel('large-v3-turbo', device='cpu', compute_type='int8')" || echo "Large-v3-turbo model download skipped"
+RUN python3 -c "import faster_whisper; print('Downloading ivrit-ai/whisper-large-v3-turbo-ct2...'); m = faster_whisper.WhisperModel('ivrit-ai/whisper-large-v3-turbo-ct2', device='cpu', compute_type='int8'); print('✓ ivrit-ai/whisper-large-v3-turbo-ct2 model downloaded successfully')"
+
+# Also download the general large-v3-turbo as backup
+RUN python3 -c "import faster_whisper; print('Downloading large-v3-turbo...'); m = faster_whisper.WhisperModel('large-v3-turbo', device='cpu', compute_type='int8'); print('✓ large-v3-turbo model downloaded successfully')"
 
 # Optional: Pre-download diarization models (with error handling to prevent build failure)
 RUN python3 -c "import pyannote.audio; print('Loading speaker diarization model...'); p = pyannote.audio.Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token=False)" || echo "Diarization model download skipped - will download at runtime"
@@ -63,40 +65,18 @@ RUN mkdir -p /root/.cache/whisper && \
     mkdir -p /app/cache/captures && \
     mkdir -p /app/logs
 
-# Copy the old GGML model as fallback (optional)
-# Note: GGML model copying is commented out - uncomment and place model file if needed
-# COPY models/ivrit-whisper-large-v3-turbo.bin /app/models/
+# OPTIONAL: whisper.cpp support (not required for Ivrit CT2 models)
+# The app will work without whisper.cpp - it's only needed for GGML models
+# Note: whisper.cpp/GGML support is being phased out in favor of faster_whisper/CT2 models
+# which provide better performance and quality
 
-# Copy whisper.cpp binaries if they exist (for fallback to GGML)
-# Using RUN commands with conditional copying since COPY doesn't support shell redirection
+# Create directory structure (will remain empty if whisper.cpp not available)
 RUN mkdir -p /app/whisper.cpp/build/bin /app/whisper.cpp/build/src /app/whisper.cpp/build/ggml/src
-# Copy whisper.cpp directory if it exists, otherwise create empty structure
-RUN if [ -d "whisper.cpp" ]; then \
-        cp -r whisper.cpp /tmp/; \
-        echo "whisper.cpp directory copied to temp"; \
-    else \
-        mkdir -p /tmp/whisper.cpp/build/{bin,src,ggml/src}; \
-        echo "whisper.cpp not found, created empty structure"; \
-    fi
-RUN if [ -f /tmp/whisper.cpp/build/bin/whisper-cli ]; then \
-        cp /tmp/whisper.cpp/build/bin/whisper-cli /app/whisper.cpp/build/bin/ && \
-        echo "whisper-cli copied successfully"; \
-    else \
-        echo "whisper.cpp not found, skipping"; \
-    fi
-RUN if [ -f /tmp/whisper.cpp/build/src/libwhisper.so ]; then \
-        cp /tmp/whisper.cpp/build/src/libwhisper.so* /app/whisper.cpp/build/src/ 2>/dev/null || true && \
-        echo "whisper libs copied successfully"; \
-    else \
-        echo "whisper.cpp libs not found, skipping"; \
-    fi
-RUN if [ -f /tmp/whisper.cpp/build/ggml/src/libggml.so ]; then \
-        cp /tmp/whisper.cpp/build/ggml/src/libggml*.so* /app/whisper.cpp/build/ggml/src/ 2>/dev/null || true && \
-        echo "ggml libs copied successfully"; \
-    else \
-        echo "ggml libs not found, skipping"; \
-    fi
-RUN rm -rf /tmp/whisper.cpp
+
+# Note: To enable GGML model support, you would need to:
+# 1. Build whisper.cpp and copy the binaries during docker build
+# 2. Copy the GGML model file (e.g., ivrit-whisper-large-v3-turbo.bin)
+# Since whisper.cpp is not available by default, GGML models won't be available
 
 # Expose port
 EXPOSE 8009
@@ -104,21 +84,22 @@ EXPOSE 8009
 # Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8009
-# Default to new Ivrit CT2 model
+# Default to new Ivrit CT2 model (faster_whisper based - no whisper.cpp needed)
 ENV WHISPER_MODEL=ivrit-ct2
 ENV IVRIT_MODEL_NAME=ivrit-ai/whisper-large-v3-turbo-ct2
 ENV IVRIT_MODEL_TYPE=ct2
 ENV IVRIT_DEVICE=cuda
 ENV IVRIT_COMPUTE_TYPE=float16
 ENV IVRIT_BEAM_SIZE=5
-# Fallback GGML paths (if needed)
-ENV IVRIT_MODEL_PATH=/app/models/ivrit-whisper-large-v3-turbo.bin
-ENV WHISPER_CPP_PATH=/app/whisper.cpp/build/bin/whisper-cli
 # Audio processing
 ENV AUDIO_CACHE_ENABLED=true
 # CUDA settings
 ENV CUDA_VISIBLE_DEVICES=0
 ENV NVIDIA_VISIBLE_DEVICES=all
+# Note: GGML/whisper.cpp paths are not set by default since whisper.cpp is optional
+# To use GGML models, you would need to provide whisper.cpp binaries and set:
+# ENV WHISPER_CPP_PATH=/app/whisper.cpp/build/bin/whisper-cli
+# ENV IVRIT_MODEL_PATH=/app/models/ivrit-whisper-large-v3-turbo.bin
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=3 \

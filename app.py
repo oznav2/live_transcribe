@@ -45,9 +45,8 @@ except ImportError:
     IVRIT_PACKAGE_AVAILABLE = False
     print("ivrit package not available - Advanced Ivrit features disabled")
 
-# Check if whisper.cpp CLI is available
-WHISPER_CPP_PATH = os.getenv("WHISPER_CPP_PATH", "/app/whisper.cpp/build/bin/whisper-cli")
-WHISPER_CPP_AVAILABLE = os.path.exists(WHISPER_CPP_PATH)
+# whisper.cpp/GGML support has been removed in favor of faster_whisper/CT2 models
+# which provide better performance and quality for Hebrew transcription
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from starlette.websockets import WebSocketState
 from fastapi.responses import HTMLResponse
@@ -109,7 +108,7 @@ logger.info("Dependency Status:")
 logger.info(f"  OpenAI Whisper: {'✓ Available' if OPENAI_WHISPER_AVAILABLE else '✗ Not Available'}")
 logger.info(f"  Faster Whisper: {'✓ Available' if FASTER_WHISPER_AVAILABLE else '✗ Not Available'}")
 logger.info(f"  Ivrit Package: {'✓ Available' if IVRIT_PACKAGE_AVAILABLE else '✗ Not Available'}")
-logger.info(f"  Whisper.cpp: {'✓ Available' if WHISPER_CPP_AVAILABLE else '✗ Not Available'}")
+# Whisper.cpp/GGML support removed - using faster_whisper instead
 logger.info(f"  Deepgram SDK: {'✓ Available' if DEEPGRAM_AVAILABLE else '✗ Not Available'}")
 logger.info(f"  CUDA: {'✓ Available' if torch.cuda.is_available() else '✗ Not Available'}")
 logger.info("=" * 60)
@@ -119,9 +118,26 @@ async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
     # Startup
     try:
-        logger.info(f"Loading Whisper model: {MODEL_SIZE}")
-        load_model(MODEL_SIZE)
-        logger.info("Default Whisper model loaded successfully")
+        if MODEL_CONFIGS:
+            logger.info(f"Loading default model: {MODEL_SIZE}")
+            try:
+                load_model(MODEL_SIZE)
+                logger.info(f"Default model '{MODEL_SIZE}' loaded successfully")
+            except Exception as e:
+                logger.warning(f"Failed to load default model '{MODEL_SIZE}': {e}")
+                # Try to load any available model
+                for model_name in MODEL_CONFIGS.keys():
+                    if model_name != MODEL_SIZE:
+                        try:
+                            logger.info(f"Trying alternative model: {model_name}")
+                            load_model(model_name)
+                            logger.info(f"Successfully loaded alternative model: {model_name}")
+                            break
+                        except Exception as e2:
+                            logger.warning(f"Failed to load {model_name}: {e2}")
+                            continue
+        else:
+            logger.warning("No models available at startup. Models can be loaded on-demand via API.")
 
         # Initialize audio cache
         init_cache_dir()
@@ -135,8 +151,9 @@ async def lifespan(app: FastAPI):
         init_download_cache_dir()
         logger.info("Download cache initialized for URL-based caching")
     except Exception as e:
-        logger.error(f"Failed to load default Whisper model: {e}")
-        raise
+        logger.error(f"Critical startup error: {e}")
+        # Don't raise - allow the app to start even without models
+        logger.warning("Application starting without pre-loaded models. Models will be loaded on-demand.")
 
     yield
 
@@ -150,53 +167,60 @@ app = FastAPI(title="Live Transcription Service", version="1.0.0", lifespan=life
 whisper_models = {}
 current_model = None
 current_model_name = None
-# Determine default model based on available dependencies
-default_model = os.getenv("WHISPER_MODEL")
-if not default_model:
-    # Auto-select based on what's available
-    if FASTER_WHISPER_AVAILABLE:
-        default_model = "ivrit-ct2"  # Use Ivrit CT2 model if faster_whisper is available
-    elif WHISPER_CPP_AVAILABLE:
-        default_model = "ivrit-large-v3-turbo"  # Use GGML model if whisper.cpp is available
-    elif OPENAI_WHISPER_AVAILABLE:
-        default_model = "large"  # Fallback to OpenAI Whisper
-    elif DEEPGRAM_AVAILABLE and DEEPGRAM_API_KEY:
-        default_model = "deepgram"  # Use Deepgram if available
-    else:
-        default_model = "ivrit-ct2"  # Default to ivrit-ct2 and let it fail with clear message
-
-MODEL_SIZE = default_model
-logger.info(f"Default model selected: {MODEL_SIZE}")
+# Default model configuration - always use ivrit-ct2 with faster_whisper
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "ivrit-ct2")
+logger.info(f"Default model: {MODEL_SIZE} (using faster_whisper with CT2 format)")
 
 # Model configurations
-MODEL_CONFIGS = {
-    "tiny": {"type": "openai", "name": "tiny"},
-    "base": {"type": "openai", "name": "base"},
-    "small": {"type": "openai", "name": "small"},
-    "medium": {"type": "openai", "name": "medium"},
-    "large": {"type": "openai", "name": "large"},
-    "ivrit-large-v3-turbo": {"type": "ggml", "path": os.getenv("IVRIT_MODEL_PATH", "models/ivrit-whisper-large-v3-turbo.bin")},
-    "deepgram": {"type": "deepgram", "model": "nova-2", "language": "en"},
-    # New Ivrit CT2 models (faster_whisper based)
-    "ivrit-ct2": {
-        "type": "faster_whisper",
-        "name": os.getenv("IVRIT_MODEL_NAME", "ivrit-ai/whisper-large-v3-turbo-ct2"),
-        "device": os.getenv("IVRIT_DEVICE", "cuda"),
-        "compute_type": os.getenv("IVRIT_COMPUTE_TYPE", "float16")
-    },
-    "ivrit-v3-turbo": {
-        "type": "faster_whisper",
-        "name": "ivrit-ai/whisper-large-v3-turbo-ct2",
-        "device": "cuda",
-        "compute_type": "float16"
-    },
-    "whisper-v3-turbo": {
-        "type": "faster_whisper",
-        "name": "large-v3-turbo",
-        "device": "cuda",
-        "compute_type": "float16"
-    }
-}
+MODEL_CONFIGS = {}
+
+# Primary models - faster_whisper CT2 models (always available)
+if FASTER_WHISPER_AVAILABLE:
+    MODEL_CONFIGS.update({
+        # Primary Ivrit model - best for Hebrew
+        "ivrit-ct2": {
+            "type": "faster_whisper",
+            "name": os.getenv("IVRIT_MODEL_NAME", "ivrit-ai/whisper-large-v3-turbo-ct2"),
+            "device": os.getenv("IVRIT_DEVICE", "cuda" if torch.cuda.is_available() else "cpu"),
+            "compute_type": os.getenv("IVRIT_COMPUTE_TYPE", "float16" if torch.cuda.is_available() else "int8")
+        },
+        # Alternative name for the same model
+        "ivrit-v3-turbo": {
+            "type": "faster_whisper",
+            "name": "ivrit-ai/whisper-large-v3-turbo-ct2",
+            "device": "cuda" if torch.cuda.is_available() else "cpu",
+            "compute_type": "float16" if torch.cuda.is_available() else "int8"
+        },
+        # General Whisper v3 turbo model
+        "whisper-v3-turbo": {
+            "type": "faster_whisper",
+            "name": "large-v3-turbo",
+            "device": "cuda" if torch.cuda.is_available() else "cpu",
+            "compute_type": "float16" if torch.cuda.is_available() else "int8"
+        }
+    })
+else:
+    logger.error("faster_whisper is not available! Please install it with: pip install faster-whisper")
+
+# Optional: OpenAI Whisper models (if available)
+if OPENAI_WHISPER_AVAILABLE:
+    MODEL_CONFIGS.update({
+        "tiny": {"type": "openai", "name": "tiny"},
+        "base": {"type": "openai", "name": "base"},
+        "small": {"type": "openai", "name": "small"},
+        "medium": {"type": "openai", "name": "medium"},
+        "large": {"type": "openai", "name": "large"},
+    })
+
+# Optional: Deepgram API (if configured)
+if DEEPGRAM_AVAILABLE and DEEPGRAM_API_KEY:
+    MODEL_CONFIGS["deepgram"] = {"type": "deepgram", "model": "nova-2", "language": "en"}
+
+# Log available models
+if MODEL_CONFIGS:
+    logger.info(f"Available models: {', '.join(MODEL_CONFIGS.keys())}")
+else:
+    logger.error("No models available! Please install faster-whisper or configure alternatives.")
 
 # Audio processing configuration
 CHUNK_DURATION = 5   # seconds - very short for fast real-time processing
@@ -325,13 +349,20 @@ def load_model(model_name: str):
         return current_model
 
     if model_name not in MODEL_CONFIGS:
-        raise ValueError(f"Unknown model: {model_name}")
+        # Provide helpful error message about available models
+        available = list(MODEL_CONFIGS.keys())
+        if not available:
+            raise ValueError(f"No models are available. Please install faster-whisper, openai-whisper, or configure Deepgram API.")
+        raise ValueError(f"Unknown model: {model_name}. Available models: {', '.join(available)}")
 
     config = MODEL_CONFIGS[model_name]
 
     if config["type"] == "openai":
         if not OPENAI_WHISPER_AVAILABLE:
-            raise ValueError("openai-whisper is not installed. Cannot load OpenAI Whisper models.")
+            # List alternative models
+            alternatives = [m for m, c in MODEL_CONFIGS.items() if c["type"] != "openai"]
+            alt_msg = f" Try one of these instead: {', '.join(alternatives)}" if alternatives else ""
+            raise ValueError(f"openai-whisper is not installed. Cannot load OpenAI Whisper models.{alt_msg}")
         
         logger.info(f"Loading OpenAI Whisper model: {config['name']}")
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -391,13 +422,6 @@ def load_model(model_name: str):
                     raise ValueError(f"Failed to load faster_whisper model on both GPU and CPU: {e2}")
             else:
                 raise
-    
-    elif config["type"] == "ggml":
-        if not WHISPER_CPP_AVAILABLE:
-            raise ValueError(f"whisper.cpp CLI not found at: {WHISPER_CPP_PATH}")
-        logger.info(f"Loading GGML model from: {config['path']}")
-        # For GGML models, we store the path and use whisper.cpp CLI
-        model = {"type": "ggml_cli", "path": config["path"], "whisper_cpp_path": WHISPER_CPP_PATH}
     
     else:
         raise ValueError(f"Unknown model type: {config['type']}")
@@ -1079,53 +1103,7 @@ async def transcribe_with_incremental_output(
             
             return transcript, detected_language
         
-        elif model_config["type"] == "ggml":
-            # Similar for whisper.cpp
-            cmd = [
-                model["whisper_cpp_path"],
-                "-m", model["path"],
-                "-f", audio_file,
-                "-nt", "-t", "4", "-bs", "1",
-                "--no-prints"
-            ]
-            if language:
-                cmd.extend(["-l", language])
-            
-            def run_whisper_cpp():
-                return subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-            
-            loop = asyncio.get_event_loop()
-            task = loop.run_in_executor(None, run_whisper_cpp)
-            
-            while not task.done():
-                await asyncio.sleep(2)
-                elapsed = time.time() - start_time
-                metrics = calculate_progress_metrics(audio_duration, elapsed)
-                
-                await websocket.send_json({
-                    "type": "transcription_progress",
-                    "audio_duration": audio_duration,
-                    "percentage": metrics["percentage"],
-                    "eta_seconds": metrics["eta_seconds"],
-                    "speed": metrics["speed"],
-                    "elapsed_seconds": int(elapsed)
-                })
-            
-            result = await task
-            
-            if result.returncode == 0:
-                transcript = result.stdout.strip()
-                # Clean output
-                lines = [l.strip() for l in transcript.split('\n') if l.strip()]
-                content_lines = [
-                    l for l in lines
-                    if not l.startswith('[') and '%]' not in l and not l.startswith('whisper_')
-                ]
-                transcript = ' '.join(content_lines)
-            else:
-                transcript = ""
-            
-            detected_language = language or 'he'
+
             
             if transcript:
                 await websocket.send_json({
@@ -1191,29 +1169,7 @@ async def transcribe_with_incremental_output(
                 if i == 0 and result.get('language'):
                     detected_language = result.get('language')
             
-            elif model_config["type"] == "ggml":
-                cmd = [
-                    model["whisper_cpp_path"],
-                    "-m", model["path"],
-                    "-f", chunk_file,
-                    "-nt", "-t", "4", "-bs", "1",
-                    "--no-prints"
-                ]
-                if language:
-                    cmd.extend(["-l", language])
-                
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                
-                if result.returncode == 0:
-                    output = result.stdout.strip()
-                    lines = [l.strip() for l in output.split('\n') if l.strip()]
-                    content_lines = [
-                        l for l in lines
-                        if not l.startswith('[') and '%]' not in l and not l.startswith('whisper_')
-                    ]
-                    chunk_text = ' '.join(content_lines)
-                else:
-                    chunk_text = ""
+
             
             # Send incremental result
             if chunk_text:
@@ -1311,37 +1267,7 @@ def transcribe_chunk(model_config: dict, model, chunk_path: str, language: Optio
                 result = model.transcribe(chunk_path, language=language, fp16=False, verbose=False)
             transcription_text = result.get('text', '').strip()
             detected_language = result.get('language', detected_language)
-        elif model_config["type"] == "ggml":
-            threads = os.getenv("WHISPER_CPP_THREADS", "4")
-            cmd = [
-                model["whisper_cpp_path"],
-                '-m', model['path'],
-                '-f', chunk_path,
-                '-nt',
-                '-t', threads,
-                '-bs', '1',
-                '--no-prints'
-            ]
-            if torch.cuda.is_available():
-                cmd.append('-fa')
-            else:
-                cmd.append('-ng')
-            if language:
-                cmd.extend(['-l', language])
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                out = result.stdout.strip() if result.stdout else ""
-                lines = [line.strip() for line in out.split('\n') if line.strip()]
-                content_lines = [
-                    line for line in lines
-                    if not line.startswith('[')
-                    and '%]' not in line
-                    and not line.startswith('whisper_')
-                ]
-                transcription_text = ' '.join(content_lines)
-                detected_language = language or 'he'
-            else:
-                transcription_text = ""
+
         elif model_config["type"] == "faster_whisper":
             if not FASTER_WHISPER_AVAILABLE:
                 raise ValueError("faster_whisper is not installed. Cannot transcribe with faster_whisper models.")
@@ -1673,57 +1599,7 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                             logger.error(f"faster_whisper transcription failed: {e}")
                             transcription_text = ""
                             detected_language = processor.language or 'he'
-                    elif model_config["type"] == "ggml":
-                        # Use whisper.cpp CLI - output text directly instead of JSON
-                        # The -oj flag has issues with mixed output, so we use plain text output
-                        threads = os.getenv("WHISPER_CPP_THREADS", "4")
-                        cmd = [
-                            model["whisper_cpp_path"],
-                            "-m", model["path"],
-                            "-f", temp_path,
-                            "-nt",  # No timestamps in output (plain text)
-                            "-t", threads,  # Use env-configured threads (default 4)
-                            "-bs", "1",  # Beam size 1 (greedy decoding - FASTEST)
-                            "--no-prints"  # Suppress debug output to stderr
-                        ]
-                        # Enable GPU offload and flash-attn when CUDA is available, else disable GPU explicitly
-                        if torch.cuda.is_available():
-                            cmd.append("-fa")
-                        else:
-                            cmd.append("-ng")
-                        if processor.language:
-                            cmd.extend(["-l", processor.language])
 
-                        # Run command asynchronously to avoid blocking the event loop
-                        process = await asyncio.create_subprocess_exec(
-                            *cmd,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE
-                        )
-                        stdout, stderr = await process.communicate()
-
-                        if process.returncode == 0:
-                            # whisper.cpp outputs text directly to stdout
-                            # Clean up the output - remove extra whitespace and newlines
-                            transcription_text = stdout.decode('utf-8').strip() if stdout else ""
-
-                            # Remove any debug/status lines that might be present
-                            lines = [line.strip() for line in transcription_text.split('\n') if line.strip()]
-                            # Filter out lines that look like debug output (contain brackets, percentages, etc.)
-                            content_lines = [
-                                line for line in lines
-                                if not line.startswith('[')
-                                and not '%]' in line
-                                and not line.startswith('whisper_')
-                            ]
-                            transcription_text = ' '.join(content_lines)
-
-                            logger.debug(f"Extracted transcription: '{transcription_text[:100]}...'")
-                        else:
-                            error_msg = stderr.decode('utf-8') if stderr else "Unknown error"
-                            logger.error(f"whisper.cpp error: {error_msg}")
-                            transcription_text = ""
-                        detected_language = processor.language or 'he'  # Default to Hebrew for Ivrit model
                     
                     # Send transcription to client
                     if transcription_text:
@@ -2344,7 +2220,7 @@ async def websocket_transcribe(websocket: WebSocket):
         data = await websocket.receive_json()
         url = data.get("url")
         language = data.get("language")
-        model_name = data.get("model", "ivrit-large-v3-turbo")
+        model_name = data.get("model", "ivrit-ct2")
         capture_mode = data.get("captureMode", "full")
 
         if not url:
@@ -2354,7 +2230,7 @@ async def websocket_transcribe(websocket: WebSocket):
         logger.info(f"Starting transcription for URL: {url} with model: {model_name}")
 
         # Warn user if using a slow model
-        slow_models = ["large", "ivrit-large-v3-turbo", "medium"]
+        slow_models = ["large", "medium"]
         if any(slow_model in model_name for slow_model in slow_models):
             await websocket.send_json({
                 "type": "status",
@@ -2462,54 +2338,7 @@ async def websocket_transcribe(websocket: WebSocket):
                                     result = model.transcribe(info["path"], language=lang2, fp16=False, verbose=False)
                                 text = result.get('text', '').strip()
                                 det_lang = result.get('language', lang2 or 'unknown')
-                            elif model_config["type"] == "ggml":
-                                # whisper.cpp CLI prefers WAV; convert m4a to WAV temporarily if needed
-                                input_path = info["path"]
-                                temp_wav = None
-                                if not input_path.lower().endswith('.wav'):
-                                    try:
-                                        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tf:
-                                            temp_wav = tf.name
-                                        ff_cmd = [
-                                            'ffmpeg','-y','-i', input_path,
-                                            '-vn','-ac','1','-ar','16000','-c:a','pcm_s16le',
-                                            temp_wav
-                                        ]
-                                        ff_res = subprocess.run(ff_cmd, capture_output=True, text=True)
-                                        if ff_res.returncode == 0:
-                                            input_path = temp_wav
-                                        else:
-                                            logger.error(f"ffmpeg convert error: {ff_res.stderr}")
-                                    except Exception as ce:
-                                        logger.error(f"Temporary WAV conversion failed: {ce}")
 
-                                cmd = [
-                                    model["whisper_cpp_path"],
-                                    '-m', model["path"],
-                                    '-f', input_path,
-                                    '-nt',
-                                    '-t', '4',
-                                    '-bs', '1',
-                                    '--no-prints'
-                                ]
-                                if lang2:
-                                    cmd.extend(['-l', lang2])
-                                res = subprocess.run(cmd, capture_output=True, text=True)
-                                if res.returncode == 0:
-                                    raw = res.stdout.strip()
-                                    lines = [l.strip() for l in raw.split('\n') if l.strip()]
-                                    content = [l for l in lines if not l.startswith('[') and '%]' not in l and not l.startswith('whisper_')]
-                                    text = ' '.join(content)
-                                else:
-                                    logger.error(f"whisper.cpp error: {res.stderr}")
-                                    text = ""
-                                det_lang = lang2 or 'he'
-                                # Cleanup temporary WAV if created
-                                if temp_wav:
-                                    try:
-                                        os.unlink(temp_wav)
-                                    except Exception:
-                                        pass
                             elif model_config["type"] == "deepgram":
                                 # Use Deepgram v3 file transcription API
                                 try:
