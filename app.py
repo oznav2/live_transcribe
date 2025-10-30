@@ -117,6 +117,17 @@ logger.info("=" * 60)
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
     # Startup
+    
+    # Critical dependency check
+    if not FASTER_WHISPER_AVAILABLE and not OPENAI_WHISPER_AVAILABLE and not (DEEPGRAM_AVAILABLE and DEEPGRAM_API_KEY):
+        logger.error("=" * 60)
+        logger.error("CRITICAL: No transcription backend available!")
+        logger.error("Please install one of the following:")
+        logger.error("  • faster-whisper: pip install faster-whisper>=1.1.1")
+        logger.error("  • openai-whisper: pip install openai-whisper")
+        logger.error("  • Configure Deepgram API with DEEPGRAM_API_KEY")
+        logger.error("=" * 60)
+    
     try:
         if MODEL_CONFIGS:
             logger.info(f"Loading default model: {MODEL_SIZE}")
@@ -219,8 +230,18 @@ if DEEPGRAM_AVAILABLE and DEEPGRAM_API_KEY:
 # Log available models
 if MODEL_CONFIGS:
     logger.info(f"Available models: {', '.join(MODEL_CONFIGS.keys())}")
+    # Ensure the default model is available
+    if MODEL_SIZE not in MODEL_CONFIGS:
+        logger.warning(f"Default model '{MODEL_SIZE}' not available. Available models: {', '.join(MODEL_CONFIGS.keys())}")
+        # Try to select first available model
+        if MODEL_CONFIGS:
+            MODEL_SIZE = list(MODEL_CONFIGS.keys())[0]
+            logger.info(f"Switching to available model: {MODEL_SIZE}")
 else:
     logger.error("No models available! Please install faster-whisper or configure alternatives.")
+    # Critical: Ensure faster_whisper is available for Ivrit models
+    if not FASTER_WHISPER_AVAILABLE:
+        logger.error("CRITICAL: faster-whisper is not installed. Install with: pip install faster-whisper>=1.1.1")
 
 # Audio processing configuration
 CHUNK_DURATION = 5   # seconds - very short for fast real-time processing
@@ -375,7 +396,11 @@ def load_model(model_name: str):
     
     elif config["type"] == "faster_whisper":
         if not FASTER_WHISPER_AVAILABLE:
-            raise ValueError("faster_whisper is not installed. Cannot load Ivrit CT2 models.")
+            raise ValueError(
+                "faster_whisper is not installed. Cannot load Ivrit CT2 models.\n"
+                "Install with: pip install faster-whisper>=1.1.1\n"
+                "Or use Docker: docker-compose -f docker-compose.ivrit.yml up"
+            )
         
         model_name_or_path = config.get("name", "ivrit-ai/whisper-large-v3-turbo-ct2")
         device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
