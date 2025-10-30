@@ -41,13 +41,14 @@ RUN pip install --no-cache-dir yt-dlp
 
 # Pre-download and cache Ivrit models during build
 # This ensures models are available immediately at runtime
-RUN python3 -c "import faster_whisper; print('Downloading ivrit-ai/whisper-large-v3-turbo-ct2...'); m = faster_whisper.WhisperModel('ivrit-ai/whisper-large-v3-turbo-ct2', device='cpu', compute_type='int8'); print('✓ ivrit-ai/whisper-large-v3-turbo-ct2 model downloaded successfully')"
+RUN python3 -c "import faster_whisper; print('Downloading ivrit-ai/whisper-large-v3-turbo-ct2...'); faster_whisper.WhisperModel('ivrit-ai/whisper-large-v3-turbo-ct2', device='cpu', compute_type='int8'); print('✓ Model downloaded successfully')"
 
 # Also download the general large-v3-turbo as backup
-RUN python3 -c "import faster_whisper; print('Downloading large-v3-turbo...'); m = faster_whisper.WhisperModel('large-v3-turbo', device='cpu', compute_type='int8'); print('✓ large-v3-turbo model downloaded successfully')"
+RUN python3 -c "import faster_whisper; print('Downloading large-v3-turbo...'); faster_whisper.WhisperModel('large-v3-turbo', device='cpu', compute_type='int8'); print('✓ Model downloaded successfully')"
 
 # Optional: Pre-download diarization models (with error handling to prevent build failure)
-RUN python3 -c "import pyannote.audio; print('Loading speaker diarization model...'); p = pyannote.audio.Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token=False)" || echo "Diarization model download skipped - will download at runtime"
+# Note: This often requires authentication, so we'll skip it and download at runtime if needed
+RUN echo "Skipping diarization model pre-download - will download at runtime if needed"
 
 # Verify installations
 RUN python3 -c "import torch; print('PyTorch version:', torch.__version__, 'CUDA available:', torch.cuda.is_available())"
@@ -55,14 +56,7 @@ RUN python3 -c "import faster_whisper; print('faster_whisper installed successfu
 RUN python3 -c "import ivrit; print('ivrit package installed successfully')"
 RUN python3 -c "from deepgram import DeepgramClient; print('Deepgram SDK installed')"
 # Check if openai-whisper is installed (we don't want it)
-RUN python3 -c "import sys; \
-try: \
-    import whisper; \
-    print('WARNING: openai-whisper found - this may conflict with faster-whisper'); \
-    sys.exit(0); \
-except ImportError: \
-    print('✓ openai-whisper not installed - using faster-whisper only (recommended)'); \
-    sys.exit(0)"
+RUN python3 -c "import importlib.util; spec = importlib.util.find_spec('whisper'); print('WARNING: openai-whisper found - this may conflict with faster-whisper') if spec else print('✓ openai-whisper not installed - using faster-whisper only (recommended)')"
 
 # Copy application code
 COPY app.py .
