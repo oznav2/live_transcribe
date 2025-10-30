@@ -131,7 +131,7 @@ CHUNK_DURATION = 5   # seconds - very short for fast real-time processing
 CHUNK_OVERLAP = 1    # seconds - minimal overlap
 SAMPLE_RATE = 16000  # Whisper expects 16kHz audio
 CHANNELS = 1  # Mono audio
-AUDIO_QUEUE_SIZE = 50  # Large queue to handle bursts
+AUDIO_QUEUE_SIZE = 200  # Large queue to handle slow models (Ivrit, large models)
 
 # Feature flags for optional parallel chunking on yt-dlp downloads
 USE_PARALLEL_TRANSCRIPTION = os.getenv("USE_PARALLEL_TRANSCRIPTION", "false").lower() == "true"
@@ -200,44 +200,271 @@ def should_use_ytdlp(url: str) -> bool:
     return any(pattern in url.lower() for pattern in ytdlp_patterns)
 
 
-def download_audio_with_ytdlp(url: str, language: Optional[str] = None) -> Optional[str]:
+def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: int = 60, websocket = None) -> Optional[str]:
     """
-    Download and normalize audio from URL using yt-dlp
-    Returns path to normalized WAV file or None on failure
-    """
-    try:
-        # Create temporary file for download
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-            output_path = temp_file.name
+    Download audio using ffmpeg directly (proven working method from test_deepgram.py)
 
-        # yt-dlp command with audio extraction and normalization
+    Args:
+        url: URL to download
+        format: Audio format (wav or m4a)
+        duration: Duration in seconds to download (default: 60, 0 = complete file)
+        websocket: Optional WebSocket connection for progress updates
+    """
+    if duration == 0:
+        logger.info(f"Downloading COMPLETE audio file with ffmpeg (format: {format})...")
+    else:
+        logger.info(f"Downloading audio with ffmpeg (format: {format}, duration: {duration}s)...")
+
+    try:
+        temp_dir = tempfile.mkdtemp()
+        audio_file = os.path.join(temp_dir, f'audio.{format}')
+        progress_file = os.path.join(temp_dir, 'progress.txt')
+
+        # Use ffmpeg directly with loudnorm filter for optimal audio quality
         cmd = [
-            'yt-dlp',
-            '--extract-audio',  # Extract audio only
-            '--audio-format', 'wav',  # Output as WAV
-            '--audio-quality', '0',  # Best quality
-            '--postprocessor-args', f'ffmpeg:-ar 16000 -ac 1 -c:a pcm_s16le',  # Normalize to Whisper format
-            '--no-playlist',  # Don't download playlists
-            '--quiet',  # Suppress output
-            '--no-warnings',  # Suppress warnings
-            '-o', output_path,
-            url
+            'ffmpeg',
+            '-i', url,
         ]
 
-        logger.info(f"Downloading audio from URL with yt-dlp: {url}")
+        # Only add duration limit if specified (0 = complete file)
+        if duration > 0:
+            cmd.extend(['-t', str(duration)])
+
+        cmd.extend([
+            '-vn',  # No video
+            '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',  # Loudness normalization filter
+            '-acodec', 'pcm_s16le' if format == 'wav' else 'aac',  # Codec based on format
+            '-ar', '44100',  # 44.1kHz sample rate
+            '-ac', '2',  # Stereo
+            '-progress', progress_file,  # Progress output to file
+            '-y',  # Overwrite output
+            audio_file
+        ])
+
+        logger.info(f"Running: ffmpeg -i {url[:50]}... -t {duration} ...")
+
+        # Run ffmpeg in background and monitor progress
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        # Monitor progress if websocket provided
+        if websocket:
+            import asyncio
+            import time
+            start_time = time.time()
+            last_update = 0
+
+            while process.poll() is None:
+                time.sleep(0.5)  # Check every 500ms
+
+                # Read progress file
+                if os.path.exists(progress_file):
+                    try:
+                        with open(progress_file, 'r') as f:
+                            lines = f.readlines()
+                            progress_data = {}
+                            for line in lines:
+                                if '=' in line:
+                                    key, value = line.strip().split('=', 1)
+                                    progress_data[key] = value
+
+                            # Extract time progress
+                            if 'out_time_ms' in progress_data:
+                                current_ms = int(progress_data['out_time_ms']) / 1000000  # Convert to seconds
+                                target_duration = duration if duration > 0 else 60  # Estimate
+                                percent = min((current_ms / target_duration) * 100, 99)
+
+                                # Calculate download speed
+                                if os.path.exists(audio_file):
+                                    file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+                                    elapsed = time.time() - start_time
+                                    speed_mbps = file_size_mb / elapsed if elapsed > 0 else 0
+                                    eta_seconds = ((target_duration - current_ms) / current_ms * elapsed) if current_ms > 0 else 0
+
+                                    # Send progress update (throttle to every 1 second)
+                                    if time.time() - last_update >= 1.0:
+                                        try:
+                                            asyncio.run(websocket.send_json({
+                                                "type": "download_progress",
+                                                "percent": round(percent, 1),
+                                                "downloaded_mb": round(file_size_mb, 2),
+                                                "speed_mbps": round(speed_mbps, 2),
+                                                "eta_seconds": int(eta_seconds),
+                                                "current_time": round(current_ms, 1),
+                                                "target_duration": target_duration
+                                            }))
+                                            last_update = time.time()
+                                        except Exception as e:
+                                            logger.debug(f"Progress update failed: {e}")
+                    except Exception as e:
+                        logger.debug(f"Progress parsing error: {e}")
+        else:
+            # No websocket, just wait for completion
+            process.wait()
+
+        result = process
+
+        # Clean up progress file
+        try:
+            if os.path.exists(progress_file):
+                os.unlink(progress_file)
+        except:
+            pass
+
+        if result.returncode != 0:
+            # Extract the actual error from stderr
+            stderr_output = result.stderr.read() if hasattr(result.stderr, 'read') else result.stderr
+            stderr_lines = stderr_output.split('\n') if stderr_output else []
+            error_line = None
+            for line in stderr_lines:
+                if 'error' in line.lower() or 'http error' in line.lower():
+                    error_line = line.strip()
+                    break
+
+            if error_line:
+                logger.error(f"❌ ffmpeg download failed: {error_line}")
+            else:
+                logger.error(f"❌ ffmpeg download failed with return code {result.returncode}")
+
+            # Check for common error patterns
+            stderr_full = result.stderr.lower()
+            if '410' in stderr_full or 'gone' in stderr_full:
+                logger.error("💡 URL has expired. Please get a fresh URL from the source.")
+            elif '403' in stderr_full or 'forbidden' in stderr_full:
+                logger.error("💡 Access denied. The URL may require authentication or be geo-restricted.")
+            elif '404' in stderr_full or 'not found' in stderr_full:
+                logger.error("💡 URL not found. Please verify the URL is correct.")
+            elif 'unsupported' in stderr_full or 'invalid data' in stderr_full:
+                logger.error("💡 Audio format not supported or file is corrupted.")
+
+            # Fallback: Try with simpler settings if loudnorm fails
+            logger.info("🔄 Trying fallback method without loudnorm...")
+            fallback_cmd = [
+                'ffmpeg',
+                '-i', url,
+            ]
+
+            # Only add duration limit if specified (0 = complete file)
+            if duration > 0:
+                fallback_cmd.extend(['-t', str(duration)])
+
+            fallback_cmd.extend([
+                '-vn',
+                '-acodec', 'pcm_s16le' if format == 'wav' else 'aac',
+                '-ar', '16000',  # 16kHz for better compatibility
+                '-ac', '1',  # Mono for better compatibility
+                '-y',
+                audio_file
+            ])
+
+            result = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+
+            if result.returncode != 0:
+                logger.error(f"❌ ffmpeg fallback also failed: {result.stderr[:500]}")
+
+                # Provide user-friendly error summary
+                if '410' in result.stderr or 'Gone' in result.stderr:
+                    logger.error("🔴 DOWNLOAD FAILED - URL has expired. Get a fresh URL from the source.")
+                elif '403' in result.stderr or 'Forbidden' in result.stderr:
+                    logger.error("🔴 DOWNLOAD FAILED - Access denied. URL may require authentication.")
+                elif '404' in result.stderr:
+                    logger.error("🔴 DOWNLOAD FAILED - URL not found. Verify the URL is correct.")
+                else:
+                    logger.error("🔴 DOWNLOAD FAILED - Unable to download audio from URL.")
+
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
+
+        if os.path.exists(audio_file):
+            file_size = os.path.getsize(audio_file)
+            logger.info(f"Successfully downloaded audio: {audio_file} ({file_size / 1024:.1f} KB)")
+            return audio_file
+        else:
+            logger.error(f"Audio file not created: {audio_file}")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return None
+
+    except subprocess.TimeoutExpired:
+        logger.error("ffmpeg download timeout after 5 minutes")
+        if 'temp_dir' in locals():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        return None
+    except Exception as e:
+        logger.error(f"ffmpeg exception: {e}")
+        if 'temp_dir' in locals():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        return None
+
+
+def download_audio_with_ytdlp(url: str, language: Optional[str] = None, format: str = 'wav') -> Optional[str]:
+    """
+    Download and normalize audio from URL using yt-dlp
+    Returns path to audio file or None on failure
+
+    Args:
+        url: URL to download from
+        language: Optional language hint
+        format: Output format ('wav' for Whisper, 'm4a' for Deepgram/general use)
+    """
+    try:
+        # Create temporary directory and file path for download
+        # yt-dlp needs a template path without extension (it adds the extension)
+        temp_dir = tempfile.mkdtemp()
+        base_filename = os.path.join(temp_dir, 'audio')
+
+        # Base yt-dlp command with critical HLS handling flags
+        cmd = [
+            'yt-dlp',
+            '-x',  # Extract audio
+            '--audio-format', format,
+            '--audio-quality', '0',  # Best quality
+            '--downloader', 'ffmpeg',  # Explicitly use ffmpeg downloader
+            # Removed --hls-use-mpegts (causes malformed MPEG-TS format that FFmpeg can't read)
+            '--no-playlist',
+            '--no-warnings',
+            '-o', base_filename + '.%(ext)s',  # Let yt-dlp add the extension
+        ]
+
+        # Add format-specific postprocessor args for wav (Whisper compatibility)
+        if format == 'wav':
+            cmd.extend(['--postprocessor-args', 'ffmpeg:-ar 16000 -ac 1 -c:a pcm_s16le'])
+
+        cmd.append(url)
+
+        # Expected output path after yt-dlp processes
+        output_path = f"{base_filename}.{format}"
+
+        logger.info(f"Downloading audio from URL with yt-dlp (format={format}): {url}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode == 0 and os.path.exists(output_path):
-            logger.info(f"Successfully downloaded and normalized audio: {output_path}")
+            logger.info(f"Successfully downloaded audio: {output_path}")
             return output_path
         else:
             logger.error(f"yt-dlp failed: {result.stderr}")
-            if os.path.exists(output_path):
-                os.unlink(output_path)
+            # Cleanup temp directory
+            try:
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except:
+                pass
             return None
 
     except subprocess.TimeoutExpired:
         logger.error("yt-dlp download timeout after 5 minutes")
+        try:
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
+        return None
+    except Exception as e:
+        logger.error(f"yt-dlp exception: {e}")
+        try:
+            import shutil
+            if 'temp_dir' in locals():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
         return None
 
 
@@ -521,16 +748,26 @@ class AudioStreamProcessor:
                     overlap_buffer = full_chunk
 
                 # Put audio chunk in queue for processing.
-                # Block briefly to reduce drops; if still full, drop oldest then retry once.
+                # Use backpressure: wait longer for queue space instead of dropping chunks
                 try:
-                    self.audio_queue.put(full_chunk, timeout=0.5)
+                    # First try non-blocking
+                    self.audio_queue.put_nowait(full_chunk)
                 except queue.Full:
+                    # Queue is full - apply backpressure by waiting up to 5 seconds
+                    # This slows down audio reading to match transcription speed
                     try:
-                        self.audio_queue.get_nowait()
-                        self.audio_queue.put(full_chunk, timeout=0.2)
-                        logger.warning("Audio queue full; evicted oldest chunk and enqueued new one")
-                    except Exception:
-                        logger.warning("Audio queue saturated; skipping chunk after retry")
+                        logger.debug(f"Audio queue full ({self.audio_queue.qsize()}/{AUDIO_QUEUE_SIZE}), applying backpressure...")
+                        self.audio_queue.put(full_chunk, timeout=5.0)
+                        logger.debug("Chunk enqueued after backpressure wait")
+                    except queue.Full:
+                        # Only drop if queue is still full after 5 seconds
+                        # This means transcription is extremely slow
+                        try:
+                            self.audio_queue.get_nowait()
+                            self.audio_queue.put_nowait(full_chunk)
+                            logger.warning(f"⚠️ Audio queue saturated ({AUDIO_QUEUE_SIZE} chunks). Evicted oldest chunk. Consider using a faster model.")
+                        except Exception:
+                            logger.error("❌ Audio queue critically full; dropping chunk. Transcription cannot keep up.")
 
         except Exception as e:
             logger.error(f"Error reading audio chunks: {e}")
@@ -739,6 +976,274 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
         await websocket.send_json({"error": str(e)})
 
 
+async def transcribe_vod_with_deepgram(websocket: WebSocket, url: str, language: Optional[str] = None):
+    """Transcribe VOD (Video On Demand) content using Deepgram's pre-recorded API"""
+    if not DEEPGRAM_AVAILABLE:
+        await websocket.send_json({"error": "Deepgram SDK not available"})
+        return
+
+    # Initialize Deepgram client
+    client = DeepgramClient(api_key=DEEPGRAM_API_KEY) if DEEPGRAM_API_KEY else DeepgramClient()
+    model = os.getenv("DEEPGRAM_MODEL", "nova-3")
+    lang = language or os.getenv("DEEPGRAM_LANGUAGE", "en-US")
+
+    try:
+        # OPTIMIZATION: Try sending URL directly to Deepgram first (much faster!)
+        # Deepgram can fetch and transcribe URLs directly without us downloading
+        await websocket.send_json({"type": "status", "message": "📡 Step 1/3: Attempting direct URL transcription via Deepgram API..."})
+
+        try:
+            # Determine if we should use language detection
+            use_detect_language = not language or language == "auto"
+
+            # Use Deepgram's URL-based transcription (recommended approach)
+            if use_detect_language:
+                logger.info("Using automatic language detection (detect_language=True)")
+                response = client.listen.v1.media.transcribe_url(
+                    url=url,
+                    model=model,
+                    detect_language=True,
+                    punctuate=True,
+                    smart_format=True
+                )
+            else:
+                response = client.listen.v1.media.transcribe_url(
+                    url=url,
+                    model=model,
+                    language=language,
+                    punctuate=True,
+                    smart_format=True
+                )
+
+            # Extract transcript and metadata from response
+            transcript = response.results.channels[0].alternatives[0].transcript.strip()
+            # Safely extract request_id from metadata (it's an object, not a dict)
+            request_id = None
+            try:
+                if hasattr(response, 'metadata') and response.metadata:
+                    request_id = getattr(response.metadata, 'request_id', None)
+            except Exception:
+                pass
+
+            if transcript:
+                response_data = {
+                    "type": "transcription",
+                    "text": transcript,
+                    "language": lang
+                }
+                # Include request_id for tracking/debugging if available
+                if request_id:
+                    response_data["request_id"] = request_id
+                    logger.info(f"✓ Sent complete Deepgram transcription ({len(transcript)} chars) [request_id: {request_id}]")
+                else:
+                    logger.info(f"✓ Sent complete Deepgram transcription ({len(transcript)} chars)")
+
+                await websocket.send_json(response_data)
+                await websocket.send_json({"type": "complete", "message": "Transcription complete"})
+                return
+            else:
+                logger.warning("No transcript received from Deepgram URL method")
+
+        except Exception as url_error:
+            # URL method failed (maybe URL not directly accessible by Deepgram)
+            logger.warning(f"Deepgram URL method failed: {url_error}, falling back to download method")
+            await websocket.send_json({"type": "status", "message": "⚠️ Direct URL method failed. Switching to download method..."})
+
+        # FALLBACK: Download with ffmpeg (proven working method) and upload to Deepgram
+        await websocket.send_json({"type": "status", "message": "⬇️ Step 2/3: Downloading audio from URL using ffmpeg (60 seconds)..."})
+
+        # Use ffmpeg download method (same as test_deepgram.py - proven working)
+        audio_file = download_audio_with_ffmpeg(url, format='wav', duration=60)
+        if not audio_file:
+            # Provide detailed error message based on logs
+            error_detail = "Failed to download audio from URL.\n\n"
+            error_detail += "Common causes:\n"
+            error_detail += "  • URL has expired (HTTP 410) - Get a fresh URL\n"
+            error_detail += "  • Access denied (HTTP 403) - URL may require authentication\n"
+            error_detail += "  • URL not found (HTTP 404) - Verify the URL is correct\n"
+            error_detail += "  • Network/connection issues\n\n"
+            error_detail += "Check server logs for specific error details."
+
+            await websocket.send_json({"error": error_detail})
+            return
+
+        # Notify download success
+        file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+        await websocket.send_json({"type": "status", "message": f"✅ Audio downloaded successfully ({file_size_mb:.1f} MB)"})
+
+        await websocket.send_json({"type": "status", "message": "🚀 Step 3/3: Uploading to Deepgram and transcribing..."})
+
+        try:
+            # Check file size before uploading
+            file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+            if file_size_mb > 100:
+                logger.warning(f"Large audio file detected ({file_size_mb:.1f}MB). This may take longer to process.")
+                await websocket.send_json({"type": "status", "message": f"Processing large file ({file_size_mb:.1f}MB), please wait..."})
+
+            with open(audio_file, "rb") as f:
+                audio_data = f.read()
+
+            # Determine if we should use language detection
+            use_detect_language = not language or language == "auto"
+
+            if use_detect_language:
+                logger.info("Using automatic language detection (detect_language=True)")
+                response = client.listen.v1.media.transcribe_file(
+                    request=audio_data,
+                    model=model,
+                    detect_language=True,
+                    punctuate=True,
+                    smart_format=True
+                )
+            else:
+                response = client.listen.v1.media.transcribe_file(
+                    request=audio_data,
+                    model=model,
+                    language=language,
+                    punctuate=True,
+                    smart_format=True
+                )
+
+            transcript = response.results.channels[0].alternatives[0].transcript.strip()
+
+            # Extract additional metadata for better user feedback
+            request_id = None
+            detected_language = None
+            confidence = None
+
+            try:
+                if hasattr(response, 'metadata') and response.metadata:
+                    request_id = getattr(response.metadata, 'request_id', None)
+            except Exception:
+                pass
+
+            try:
+                # Get detected language and confidence
+                if response.results.channels[0].alternatives:
+                    alternative = response.results.channels[0].alternatives[0]
+                    if hasattr(alternative, 'confidence'):
+                        confidence = alternative.confidence
+                    if hasattr(alternative, 'detected_language'):
+                        detected_language = alternative.detected_language
+            except Exception:
+                pass
+
+            if transcript:
+                # Log detailed success info
+                log_parts = [f"✓ Transcription complete ({len(transcript)} chars)"]
+                if detected_language:
+                    log_parts.append(f"Language: {detected_language}")
+                if confidence:
+                    log_parts.append(f"Confidence: {confidence:.2f}")
+                if request_id:
+                    log_parts.append(f"Request ID: {request_id}")
+                logger.info(" | ".join(log_parts))
+
+                # Send transcript in chunks to avoid WebSocket message size limits
+                # Split into sentences or chunks of ~500 characters
+                chunk_size = 500
+                transcript_chunks = []
+
+                # Try to split by sentences first (. ! ?)
+                sentences = []
+                current_sentence = ""
+                for char in transcript:
+                    current_sentence += char
+                    if char in '.!?' and len(current_sentence) > 50:
+                        sentences.append(current_sentence.strip())
+                        current_sentence = ""
+                if current_sentence.strip():
+                    sentences.append(current_sentence.strip())
+
+                # Group sentences into chunks
+                current_chunk = ""
+                for sentence in sentences:
+                    if len(current_chunk) + len(sentence) + 1 <= chunk_size:
+                        current_chunk += (" " if current_chunk else "") + sentence
+                    else:
+                        if current_chunk:
+                            transcript_chunks.append(current_chunk)
+                        current_chunk = sentence
+                if current_chunk:
+                    transcript_chunks.append(current_chunk)
+
+                # If no chunks created (no sentence breaks), split by character count
+                if not transcript_chunks:
+                    for i in range(0, len(transcript), chunk_size):
+                        transcript_chunks.append(transcript[i:i + chunk_size])
+
+                # Send each chunk
+                logger.info(f"Sending transcript in {len(transcript_chunks)} chunks")
+                await websocket.send_json({"type": "status", "message": f"📝 Transcription complete! Sending {len(transcript)} characters..."})
+
+                for i, chunk in enumerate(transcript_chunks):
+                    response_data = {
+                        "type": "transcription",
+                        "text": chunk,
+                        "language": detected_language or lang
+                    }
+                    if request_id:
+                        response_data["request_id"] = request_id
+                    await websocket.send_json(response_data)
+                    # Small delay between chunks to ensure proper delivery
+                    await asyncio.sleep(0.1)
+            else:
+                # Provide detailed feedback when no transcript is returned
+                error_msg = "⚠️ No transcript received from Deepgram"
+
+                # Provide possible causes
+                possible_causes = []
+                if file_size_mb < 0.1:
+                    possible_causes.append("Audio file is very small (< 100KB) - may contain no speech")
+                possible_causes.extend([
+                    "No speech detected in the audio",
+                    "Audio contains only music/silence",
+                    "Audio quality too poor to transcribe",
+                    "Language not well-supported by Deepgram"
+                ])
+
+                detailed_msg = f"{error_msg}\n\nPossible causes:\n" + "\n".join(f"  • {cause}" for cause in possible_causes)
+                logger.warning(detailed_msg)
+
+                await websocket.send_json({
+                    "type": "status",
+                    "message": "⚠️ No speech detected in audio. The file may contain only music, silence, or unclear speech."
+                })
+
+            await websocket.send_json({"type": "complete", "message": "Transcription complete"})
+
+        except Exception as e:
+            error_msg = str(e)
+            # Handle specific payload size errors
+            if "413" in error_msg or "payload too large" in error_msg.lower() or "entity too large" in error_msg.lower():
+                logger.error(f"Deepgram payload too large error: {e}")
+                await websocket.send_json({
+                    "error": "Audio file too large for direct upload. Try using a URL instead or use a smaller file."
+                })
+            else:
+                logger.error(f"Deepgram transcription error: {e}")
+                await websocket.send_json({"error": f"Deepgram transcription failed: {str(e)}"})
+
+        finally:
+            # Cleanup downloaded file and its temp directory
+            try:
+                if audio_file and os.path.exists(audio_file):
+                    os.unlink(audio_file)
+                    temp_dir = os.path.dirname(audio_file)
+                    if temp_dir and os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception as e:
+                logger.debug(f"Cleanup warning: {e}")
+
+    except Exception as e:
+        logger.error(f"VOD transcription error: {e}")
+        try:
+            if websocket.client_state == WebSocketState.CONNECTED:
+                await websocket.send_json({"error": str(e)})
+        except:
+            pass
+
+
 async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Optional[str] = None):
     """Transcribe audio stream using Deepgram live transcription (matches user's sample logic)"""
     if not DEEPGRAM_AVAILABLE:
@@ -751,14 +1256,25 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
         dg_closed_event = asyncio.Event()
 
         # Helper: robustly extract transcript from Deepgram payloads
+        # Only return final transcripts, not interim results
         def extract_deepgram_transcript(message) -> str:
             try:
                 if isinstance(message, dict):
+                    # Check if this is a final transcript (not interim)
+                    is_final = message.get('is_final', True)  # Default to True if not specified
+                    if not is_final:
+                        return ''  # Skip interim results
+
                     alts = message.get('channel', {}).get('alternatives', [])
                     if alts:
                         return alts[0].get('transcript', '')
                 # v4 typed objects
                 if hasattr(message, 'channel') and hasattr(message.channel, 'alternatives'):
+                    # Check if this is a final transcript
+                    is_final = getattr(message, 'is_final', True)
+                    if not is_final:
+                        return ''  # Skip interim results
+
                     alt0 = message.channel.alternatives[0] if message.channel.alternatives else None
                     if alt0 is not None:
                         return getattr(alt0, 'transcript', '') or ''
@@ -766,16 +1282,12 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
                 pass
             return ''
 
-        # Helper: print-transcript compatible method
-        def print_transcript(json_data):
-            alts = json_data.get('channel', {}).get('alternatives', []) if isinstance(json_data, dict) else []
-            transcript = alts[0].get('transcript', '') if alts else ''
-            print(transcript)
 
         # Initialize Deepgram client
         client = DeepgramClient(api_key=DEEPGRAM_API_KEY) if DEEPGRAM_API_KEY else DeepgramClient()
         # Apply user-requested params
-        TIME_LIMIT = int(os.getenv("DEEPGRAM_TIME_LIMIT", "30"))
+        # TIME_LIMIT: Set to 0 or negative for unlimited streaming, or positive number for time limit in seconds
+        TIME_LIMIT = int(os.getenv("DEEPGRAM_TIME_LIMIT", "3600"))
         TRANSCRIPT_ONLY = os.getenv("DEEPGRAM_TRANSCRIPT_ONLY", "true").lower() == "true"
         PARAMS = {
             "punctuate": True,
@@ -786,6 +1298,11 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
 
         # Create a websocket client (SDK v4)
         connection = client.listen.websocket.v("1")
+
+        # Capture the event loop reference BEFORE defining callbacks
+        # The Deepgram SDK runs callbacks in a different thread, so we need to capture the loop here
+        loop = asyncio.get_event_loop()
+
         # Event handlers
         # Listen for the connection to open
         connection.on(DG_EVENT_OPEN, lambda *_: logger.info("Deepgram connection opened"))
@@ -796,28 +1313,26 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
             payload = kwargs.get('result') if 'result' in kwargs else (args[1] if len(args) >= 2 else None)
             sentence = extract_deepgram_transcript(payload) if payload is not None else ''
 
-            if TRANSCRIPT_ONLY:
-                if isinstance(payload, dict):
-                    print_transcript(payload)
-                else:
-                    print(sentence)
-            else:
-                try:
-                    print(payload)
-                except Exception:
+            # Only process and log non-empty transcripts to avoid log spam from interim results
+            if sentence:
+                # Optional: print transcript to console if TRANSCRIPT_ONLY mode
+                if TRANSCRIPT_ONLY:
                     print(sentence)
 
-            if sentence:
                 try:
                     if ws_open and websocket.client_state == WebSocketState.CONNECTED and not dg_closed_event.is_set():
-                        asyncio.create_task(websocket.send_json({
-                            "type": "transcription",
-                            "text": sentence,
-                            "language": language or os.getenv("DEEPGRAM_LANGUAGE", "en-US")
-                        }))
+                        # Schedule the coroutine on the main event loop from this callback thread
+                        asyncio.run_coroutine_threadsafe(
+                            websocket.send_json({
+                                "type": "transcription",
+                                "text": sentence,
+                                "language": language or os.getenv("DEEPGRAM_LANGUAGE", "en-US")
+                            }),
+                            loop
+                        )
                         logger.info(f"✓ Sent Deepgram transcription: {sentence[:100]}...")
-                except RuntimeError:
-                    pass
+                except Exception as e:
+                    logger.error(f"Failed to send Deepgram transcription: {e}")
 
         connection.on(DG_EVENT_MESSAGE, on_message)
         # On close, mark closed but don't send over websocket (function will handle finalization)
@@ -867,16 +1382,27 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
             await websocket.send_json({"error": f"Deepgram SDK options missing: {e}"})
             return
 
+        # Determine language parameter for streaming
+        # WebSocket doesn't support detect_language, so use 'multi' for auto-detection
+        stream_language = language if language and language != "auto" else "multi"
+
+        if stream_language == "multi":
+            logger.info("Using multi-language support for automatic language detection in streaming")
+        else:
+            logger.info(f"Using language for streaming: {stream_language}")
+
         # Build options from PARAMS and app audio settings
         opts_kwargs = {
             "model": PARAMS["model"],
-            "language": PARAMS["language"],
+            "language": stream_language,
             "punctuate": PARAMS["punctuate"],
             "numerals": PARAMS["numerals"],
             "encoding": "linear16",
             "sample_rate": SAMPLE_RATE,
             "channels": CHANNELS,
             "interim_results": True,
+            "endpointing": False,  # Disable auto-closure on silence detection
+            "vad_turnoff": 5000,   # 5 second VAD timeout (prevent premature closure)
         }
         # Tier may not be allowed on some accounts; include only if set via env
         dg_tier = os.getenv("DEEPGRAM_TIER")
@@ -901,14 +1427,17 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
         await websocket.send_json({"type": "status", "message": "Streaming audio to Deepgram via ffmpeg..."})
 
         ffmpeg_cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "ffmpeg", "-hide_banner", "-loglevel", "warning",
+            "-reconnect", "1",              # Reconnect on connection failures
+            "-reconnect_streamed", "1",     # Reconnect for streamed inputs
+            "-reconnect_delay_max", "5",    # Max reconnect delay
             "-user_agent", "Mozilla/5.0",
             "-i", url,
-            "-vn",
-            "-f", "s16le",
-            "-acodec", "pcm_s16le",
-            "-ac", str(CHANNELS),
-            "-ar", str(SAMPLE_RATE),
+            "-vn",                          # No video
+            "-f", "s16le",                  # PCM signed 16-bit little-endian
+            "-acodec", "pcm_s16le",         # Audio codec
+            "-ac", str(CHANNELS),           # Mono
+            "-ar", str(SAMPLE_RATE),        # 16kHz sample rate
             "pipe:1",
         ]
 
@@ -919,20 +1448,34 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
         )
 
         start_ts = asyncio.get_event_loop().time()
-        time_limit = float(TIME_LIMIT)
+        # Support unlimited streaming: if TIME_LIMIT <= 0, stream indefinitely
+        time_limit = float(TIME_LIMIT) if TIME_LIMIT > 0 else float("inf")
 
         try:
+            bytes_sent = 0
+
             while True:
+                # Check time limit only if it's not infinite
                 if time_limit != float("inf"):
                     elapsed = asyncio.get_event_loop().time() - start_ts
                     if elapsed >= time_limit:
+                        logger.info(f"Deepgram stream reached time limit of {TIME_LIMIT} seconds")
                         break
 
                 data = await proc.stdout.read(4096)
                 if not data:
+                    # Check if ffmpeg process exited with an error
+                    stderr_output = await proc.stderr.read()
+                    if stderr_output:
+                        logger.error(f"FFmpeg error: {stderr_output.decode('utf-8', errors='ignore')}")
+                    logger.info(f"FFmpeg stream ended after {bytes_sent} bytes")
                     break
-                # Stream raw PCM bytes to Deepgram
+
+                # Stream raw PCM bytes to Deepgram as fast as possible
+                # No throttling needed - Deepgram handles buffering
+                # With endpointing disabled and high VAD timeout, connection stays open
                 connection.send(data)
+                bytes_sent += len(data)
         finally:
             try:
                 proc.terminate()
@@ -940,18 +1483,31 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
             except Exception:
                 pass
 
-        # Signal finish
+        # Signal finish to Deepgram
         try:
             connection.finish()
+            logger.info("Sent finish signal to Deepgram, waiting for final transcriptions...")
         except Exception:
             pass
 
-        # Wait briefly for Deepgram close event, then finalize
+        # Wait for Deepgram to finish processing all buffered audio
+        # Calculate estimated processing time based on audio sent
+        # Deepgram typically processes audio faster than real-time, but we need to account for:
+        # - Network latency for sending results back
+        # - Processing queue time
+        # Use generous timeout: min 10s, max 60s, or estimated audio duration
+        estimated_audio_seconds = bytes_sent / (SAMPLE_RATE * CHANNELS * 2) if bytes_sent > 0 else 0
+        processing_timeout = min(max(estimated_audio_seconds + 10, 10), 60)
+
+        logger.info(f"Waiting up to {processing_timeout:.1f}s for Deepgram to process {estimated_audio_seconds:.1f}s of audio")
+
         try:
-            # Give Deepgram up to 1s to emit close
+            # Wait for Deepgram close event with appropriate timeout
             try:
-                await asyncio.wait_for(dg_closed_event.wait(), timeout=1.0)
+                await asyncio.wait_for(dg_closed_event.wait(), timeout=processing_timeout)
+                logger.info("Deepgram closed connection after processing")
             except asyncio.TimeoutError:
+                logger.warning(f"Timeout waiting for Deepgram close after {processing_timeout}s")
                 pass
             # Send completion if still connected
             if ws_open and websocket.client_state == WebSocketState.CONNECTED:
@@ -1002,9 +1558,27 @@ async def websocket_transcribe(websocket: WebSocket):
 
         logger.info(f"Starting transcription for URL: {url} with model: {model_name}")
 
+        # Warn user if using a slow model
+        slow_models = ["large", "ivrit-large-v3-turbo", "medium"]
+        if any(slow_model in model_name for slow_model in slow_models):
+            await websocket.send_json({
+                "type": "status",
+                "message": f"⚠️ Using {model_name} - This model provides excellent quality but processes slowly. Consider using Deepgram for faster results."
+            })
+
         # Check if user selected Deepgram
         if model_name == "deepgram":
-            await transcribe_with_deepgram(websocket, url, language)
+            # For VOD content (complete videos), use pre-recorded API for better results
+            # For true live streams, use streaming API
+            # Detection: if URL is yt-dlp compatible or contains VOD patterns, treat as pre-recorded
+            is_vod = should_use_ytdlp(url) or any(pattern in url.lower() for pattern in ['.mp4', '.mp3', '.wav', '.m4a', 'video-', '/media/'])
+
+            if is_vod:
+                logger.info(f"Detected VOD content, using pre-recorded API for better accuracy")
+                await transcribe_vod_with_deepgram(websocket, url, language)
+            else:
+                logger.info(f"Detected live stream, using streaming API")
+                await transcribe_with_deepgram(websocket, url, language)
             return
 
         # If capture_mode is first60, perform a 60s capture to WAV and gate transcription
@@ -1309,8 +1883,155 @@ async def websocket_transcribe(websocket: WebSocket):
 
             return
 
-        # Otherwise, use direct FFmpeg streaming (existing code)
-        await websocket.send_json({"type": "status", "message": "Starting audio stream..."})
+        # For Whisper/Ivrit models with VOD content: Download complete file first, then transcribe
+        # This prevents queue overflow and data loss with slow models
+        # Only use real-time streaming for actual live streams
+        is_vod = should_use_ytdlp(url) or any(pattern in url.lower() for pattern in ['.mp4', '.mp3', '.wav', '.m4a', 'video-', '/media/'])
+
+        if is_vod:
+            # VOD Mode: Download complete file first, then batch transcribe
+            await websocket.send_json({"type": "status", "message": "📥 Downloading complete audio file for batch transcription..."})
+
+            try:
+                # Download complete audio using yt-dlp or ffmpeg (with progress tracking)
+                if should_use_ytdlp(url):
+                    audio_file = download_audio_with_ytdlp(url, language, format='wav')
+                else:
+                    # Use ffmpeg for direct URLs - download complete file (no duration limit for VOD)
+                    audio_file = download_audio_with_ffmpeg(url, format='wav', duration=0, websocket=websocket)  # 0 = no limit
+
+                if not audio_file:
+                    await websocket.send_json({"error": "Failed to download audio file. Check server logs for details."})
+                    return
+
+                file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+                await websocket.send_json({"type": "status", "message": f"✅ Downloaded {file_size_mb:.1f} MB. Starting batch transcription..."})
+
+                # Batch transcribe the complete file
+                model = load_model(model_name)
+                model_config = MODEL_CONFIGS[model_name]
+
+                if model_config["type"] == "openai":
+                    # OpenAI Whisper
+                    use_fp16 = torch.cuda.is_available()
+                    try:
+                        result = model.transcribe(audio_file, language=language, fp16=use_fp16, verbose=False)
+                    except Exception as e:
+                        logger.warning(f"GPU/FP16 transcribe failed: {e}. Retrying with fp16=False.")
+                        result = model.transcribe(audio_file, language=language, fp16=False, verbose=False)
+
+                    transcript = result.get('text', '').strip()
+                    detected_language = result.get('language', language or 'unknown')
+
+                elif model_config["type"] == "ggml":
+                    # whisper.cpp (Ivrit model) - Process in chunks for progress tracking
+                    whisper_bin = os.getenv("WHISPER_CPP_PATH", "whisper.cpp/build/bin/whisper-cli")
+                    model_path = model_config["path"]
+
+                    # Get audio duration for progress calculation
+                    audio_duration = get_audio_duration_seconds(audio_file)
+                    if not audio_duration:
+                        audio_duration = 60  # Fallback estimate
+
+                    # Split audio into 30-second chunks for progress tracking
+                    await websocket.send_json({"type": "status", "message": "📊 Preparing audio chunks for transcription..."})
+                    chunk_duration = 30
+                    temp_dir, chunks = split_audio_into_chunks(audio_file, chunk_seconds=chunk_duration, overlap_seconds=2)
+
+                    total_chunks = len(chunks)
+                    await websocket.send_json({"type": "status", "message": f"🚀 Starting transcription of {total_chunks} chunks..."})
+
+                    transcript_parts = []
+                    import time
+                    start_time = time.time()
+
+                    for idx, (chunk_idx, chunk_path) in enumerate(chunks):
+                        # Transcribe this chunk
+                        cmd = [whisper_bin, '-m', model_path, '-f', chunk_path, '-l', language or 'auto', '-nt', '--no-prints']
+                        chunk_result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+                        if chunk_result.returncode == 0:
+                            chunk_text = chunk_result.stdout.strip()
+                            # Clean up whisper.cpp output
+                            lines = [line.strip() for line in chunk_text.split('\n') if line.strip()]
+                            content_lines = [
+                                line for line in lines
+                                if not line.startswith('[') and '%]' not in line and not line.startswith('whisper_')
+                            ]
+                            chunk_text = ' '.join(content_lines)
+
+                            if chunk_text:
+                                transcript_parts.append(chunk_text)
+
+                                # Send incremental preview every 4 chunks or if text is substantial
+                                if (idx + 1) % 4 == 0 or len(chunk_text) > 100:
+                                    await websocket.send_json({
+                                        "type": "transcription_preview",
+                                        "text": chunk_text,
+                                        "language": language or 'he'
+                                    })
+
+                        # Calculate and send progress
+                        percent = ((idx + 1) / total_chunks) * 100
+                        elapsed = time.time() - start_time
+                        avg_time_per_chunk = elapsed / (idx + 1)
+                        remaining_chunks = total_chunks - (idx + 1)
+                        eta_seconds = int(avg_time_per_chunk * remaining_chunks)
+
+                        await websocket.send_json({
+                            "type": "transcription_progress",
+                            "percent": round(percent, 1),
+                            "chunks_processed": idx + 1,
+                            "chunks_total": total_chunks,
+                            "eta_seconds": eta_seconds
+                        })
+
+                    # Combine all chunks
+                    transcript = ' '.join(transcript_parts)
+                    detected_language = language or 'he'
+
+                    # Cleanup chunk directory
+                    try:
+                        import shutil
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    except:
+                        pass
+
+                # Send complete transcript
+                if transcript:
+                    await websocket.send_json({"type": "status", "message": f"📝 Transcription complete! Sending {len(transcript)} characters..."})
+
+                    # Send in chunks for large transcripts
+                    chunk_size = 500
+                    for i in range(0, len(transcript), chunk_size):
+                        chunk = transcript[i:i + chunk_size]
+                        await websocket.send_json({
+                            "type": "transcription",
+                            "text": chunk,
+                            "language": detected_language
+                        })
+                        await asyncio.sleep(0.05)
+
+                    await websocket.send_json({"type": "complete", "message": "Transcription complete"})
+                else:
+                    await websocket.send_json({"type": "status", "message": "⚠️ No speech detected in audio file"})
+                    await websocket.send_json({"type": "complete", "message": "Transcription complete (no speech detected)"})
+
+                # Cleanup
+                try:
+                    os.unlink(audio_file)
+                except:
+                    pass
+
+                return
+
+            except Exception as e:
+                logger.error(f"Batch transcription error: {e}")
+                await websocket.send_json({"error": f"Transcription failed: {str(e)}"})
+                return
+
+        # Otherwise, use direct FFmpeg streaming (for true live streams only)
+        await websocket.send_json({"type": "status", "message": "Starting real-time audio stream..."})
 
         # Create audio processor
         processor = AudioStreamProcessor(url, language, model_name)

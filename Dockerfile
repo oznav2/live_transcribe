@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     python3-pip \
+    portaudio19-dev \
     && pip3 install yt-dlp \
     && rm -rf /var/lib/apt/lists/*
 
@@ -21,14 +22,16 @@ COPY requirements.txt .
 # Install Python dependencies (PyTorch CUDA 11.8 wheels)
 # First install torch with CUDA support, then install other dependencies
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 \
-        torch==2.1.2+cu118 torchaudio==2.1.2+cu118 && \
-    pip install --no-cache-dir -r requirements.txt && \
-    python - <<'PY'
-import torch
-print('CUDA Available:', torch.cuda.is_available())
-print('CUDA Version:', torch.version.cuda)
-print('GPU Count:', torch.cuda.device_count())
-PY
+        torch==2.1.2+cu118 torchaudio==2.1.2+cu118
+
+# Install remaining Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Verify PyTorch installation (optional - won't fail build if CUDA unavailable)
+RUN python -c "import torch; print('✓ PyTorch installed:', torch.__version__)" || echo "Warning: PyTorch verification failed"
+
+# Verify Deepgram SDK installation
+RUN python -c "from deepgram import DeepgramClient; import deepgram; print('✓ Deepgram SDK installed:', deepgram.__version__)"
 
 # Copy application code
 COPY app.py .

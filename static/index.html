@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vibe - Live Stream Transcription</title>
+    <title>VibGram - Live Stream Transcription</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
     <style>
@@ -337,50 +337,6 @@
             font-size: 12px;
         }
 
-        .sample-urls {
-            margin-top: 16px;
-        }
-
-        .sample-urls summary {
-            color: #999;
-            font-size: 13px;
-            cursor: pointer;
-            padding: 8px 0;
-            user-select: none;
-        }
-
-        .sample-urls summary:hover {
-            color: #ccc;
-        }
-
-        .sample-url-item {
-            background: #2a2a2a;
-            border-left: 3px solid #0066cc;
-            padding: 12px 16px;
-            margin-top: 8px;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .sample-url-item:hover {
-            background: #333;
-            transform: translateX(4px);
-        }
-
-        .sample-url-title {
-            color: #0066cc;
-            font-size: 13px;
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-
-        .sample-url-path {
-            color: #666;
-            font-size: 11px;
-            font-family: 'Courier New', monospace;
-        }
-
         .hidden {
             display: none !important;
         }
@@ -418,7 +374,7 @@
                 <i class="fas fa-microphone"></i>
                 Vibe
             </div>
-            <div class="vibe-subtitle">Real-time audio transcription powered by Whisper AI</div>
+            <div class="vibe-subtitle">Real-time audio transcription of live streams powered by Whisper AI</div>
         </div>
 
         <!-- Body -->
@@ -426,7 +382,7 @@
             <!-- Tabs -->
             <div class="vibe-tabs">
                 <button class="vibe-tab active">
-                    <i class="fas fa-link"></i> Stream URL
+                    <i class="fas fa-link"></i> Stream URL (HLS)
                 </button>
             </div>
 
@@ -485,19 +441,6 @@
                 </select>
             </div>
 
-            <!-- Sample URLs -->
-            <details class="sample-urls">
-                <summary><i class="fas fa-info-circle"></i> Sample URLs (Click to expand)</summary>
-                <div class="sample-url-item" onclick="useSampleUrl('https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3')">
-                    <div class="sample-url-title">Direct MP3 Audio</div>
-                    <div class="sample-url-path">https://www.soundhelix.com/examples/mp3/...</div>
-                </div>
-                <div class="sample-url-item" onclick="useSampleUrl('https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8')">
-                    <div class="sample-url-title">HLS Stream (m3u8)</div>
-                    <div class="sample-url-path">https://test-streams.mux.dev/.../file.m3u8</div>
-                </div>
-            </details>
-
             <!-- Action Buttons -->
             <div class="btn-group">
                 <button id="startBtn" class="btn btn-primary">
@@ -552,7 +495,7 @@
             <!-- Footer -->
             <div class="footer">
                 <div>
-                    <i class="fas fa-brain"></i> Powered by OpenAI Whisper
+                    <i class="fas fa-brain"></i> Powered by OpenAI Whisper and Deepgram Nova-3
                     <span style="margin: 0 8px;">•</span>
                     <i class="fas fa-code"></i> Built with FastAPI & WebSockets
                 </div>
