@@ -664,6 +664,17 @@
                 </small>
             </div>
 
+            <!-- Speaker Diarization Option -->
+            <div class="form-group" style="margin-top: 20px;">
+                <label class="form-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" id="diarizationToggle" style="width: 18px; height: 18px; cursor: pointer;">
+                    <span>Enable Speaker Diarization 🎭</span>
+                </label>
+                <small style="color: #999; display: block; margin-top: 4px; margin-left: 26px;">
+                    Identify and label different speakers (SPEAKER_1, SPEAKER_2, etc.). Processing takes longer.
+                </small>
+            </div>
+
             <!-- Action Buttons -->
             <div class="btn-group">
                 <button id="startBtn" class="btn btn-primary">
@@ -1010,6 +1021,7 @@
             const language = languageSelect.value || null;
             const model = modelSelect.value || 'whisper-v3-turbo';
             const captureMode = scopeSelect.value || 'full';
+            const diarization = document.getElementById('diarizationToggle').checked;
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${protocol}//${window.location.host}/ws/transcribe`);
@@ -1018,7 +1030,7 @@
                 console.log('WebSocket connected');
                 updateStatus('connecting', 'Connecting to stream...');
                 
-                ws.send(JSON.stringify({ url, language, model, captureMode }));
+                ws.send(JSON.stringify({ url, language, model, captureMode, diarization }));
                 
                 startBtn.classList.add('hidden');
                 stopBtn.classList.remove('hidden');
@@ -1215,8 +1227,9 @@
             }
             const language = languageSelect.value || null;
             const model = modelSelect.value || 'whisper-v3-turbo';
+            const diarization = document.getElementById('diarizationToggle').checked;
             updateStatus('connecting', 'Transcribing captured audio...');
-            ws.send(JSON.stringify({ action: 'transcribe_capture', capture_id: captureId, language, model }));
+            ws.send(JSON.stringify({ action: 'transcribe_capture', capture_id: captureId, language, model, diarization }));
             transcribeNowBtn.classList.add('hidden');
         }
 

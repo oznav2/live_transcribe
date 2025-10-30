@@ -50,6 +50,16 @@ except ImportError:
     IVRIT_PACKAGE_AVAILABLE = False
     print("ivrit package not available - Advanced Ivrit features disabled")
 
+# Try to import pyannote for speaker diarization
+try:
+    from pyannote.audio import Pipeline
+    import torchaudio
+    PYANNOTE_AVAILABLE = True
+except ImportError:
+    PYANNOTE_AVAILABLE = False
+    print("pyannote.audio not available - Speaker diarization disabled")
+    print("Install with: pip install pyannote.audio torchaudio")
+
 # whisper.cpp/GGML support has been removed in favor of faster_whisper/CT2 models
 # which provide better performance and quality for Hebrew transcription
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
@@ -113,6 +123,7 @@ logger.info("Dependency Status:")
 logger.info(f"  OpenAI Whisper: {'✓ Available' if OPENAI_WHISPER_AVAILABLE else '✗ Not Available'}")
 logger.info(f"  Faster Whisper: {'✓ Available' if FASTER_WHISPER_AVAILABLE else '✗ Not Available'}")
 logger.info(f"  Ivrit Package: {'✓ Available' if IVRIT_PACKAGE_AVAILABLE else '✗ Not Available'}")
+logger.info(f"  Pyannote Audio: {'✓ Available' if PYANNOTE_AVAILABLE else '✗ Not Available (Diarization disabled)'}")
 # Whisper.cpp/GGML support removed - using faster_whisper instead
 logger.info(f"  Deepgram SDK: {'✓ Available' if DEEPGRAM_AVAILABLE else '✗ Not Available'}")
 logger.info(f"  CUDA: {'✓ Available' if torch.cuda.is_available() else '✗ Not Available'}")
@@ -183,6 +194,10 @@ app = FastAPI(title="Live Transcription Service", version="1.0.0", lifespan=life
 whisper_models = {}
 current_model = None
 current_model_name = None
+# Global diarization pipeline cache
+diarization_pipeline = None
+diarization_pipeline_lock = threading.Lock()
+
 # Default model configuration - always use ivrit-ct2 with faster_whisper
 MODEL_SIZE = os.getenv("WHISPER_MODEL", "whisper-v3-turbo")  # Default to multilingual model
 logger.info(f"Default model: {MODEL_SIZE} (using faster_whisper with CT2 format)")
@@ -464,6 +479,248 @@ def load_model(model_name: str):
     current_model = model
     current_model_name = model_name
     return model
+
+
+def get_diarization_pipeline():
+    """Load and cache the pyannote diarization pipeline"""
+    global diarization_pipeline
+    
+    if not PYANNOTE_AVAILABLE:
+        logger.warning("Pyannote not available - diarization disabled")
+        return None
+    
+    with diarization_pipeline_lock:
+        if diarization_pipeline is None:
+            try:
+                logger.info("Loading pyannote diarization pipeline...")
+                # Try to load the Ivrit-optimized model first
+                try:
+                    diarization_pipeline = Pipeline.from_pretrained(
+                        "ivrit-ai/pyannote-speaker-diarization-3.1",
+                        use_auth_token=os.getenv("HUGGINGFACE_TOKEN")
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to load Ivrit diarization model: {e}")
+                    # Fall back to the standard model
+                    diarization_pipeline = Pipeline.from_pretrained(
+                        "pyannote/speaker-diarization-3.1",
+                        use_auth_token=os.getenv("HUGGINGFACE_TOKEN")
+                    )
+                
+                # Move to GPU if available
+                if torch.cuda.is_available():
+                    diarization_pipeline.to(torch.device("cuda"))
+                
+                logger.info("Diarization pipeline loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load diarization pipeline: {e}")
+                return None
+    
+    return diarization_pipeline
+
+
+async def transcribe_with_diarization(
+    model, 
+    model_config: dict, 
+    audio_file: str, 
+    language: Optional[str],
+    websocket: WebSocket,
+    model_name: str = None
+) -> Tuple[List[dict], str]:
+    """
+    Transcribe audio with speaker diarization.
+    Returns (diarized_segments, detected_language)
+    
+    Each segment contains:
+    - start: start time in seconds
+    - end: end time in seconds  
+    - speaker: speaker label (SPEAKER_1, SPEAKER_2, etc.)
+    - text: transcribed text
+    """
+    import time
+    
+    logger.info(f"Starting transcription with diarization for {audio_file}")
+    
+    # Send status update
+    await websocket.send_json({
+        "type": "status",
+        "message": "Starting transcription with speaker diarization..."
+    })
+    
+    # Step 1: Run diarization to get speaker segments
+    pipeline = get_diarization_pipeline()
+    if pipeline is None:
+        logger.warning("Diarization pipeline not available, falling back to regular transcription")
+        # Fall back to regular transcription
+        transcript, lang = await transcribe_with_incremental_output(
+            model, model_config, audio_file, language, websocket, model_name
+        )
+        return [{"text": transcript, "speaker": "SPEAKER_1"}], lang
+    
+    try:
+        # Run diarization
+        await websocket.send_json({
+            "type": "status", 
+            "message": "Analyzing speakers in audio..."
+        })
+        
+        diarization = pipeline(audio_file)
+        
+        # Convert diarization output to segments
+        speaker_segments = []
+        for segment, _, speaker in diarization.itertracks(yield_label=True):
+            speaker_segments.append({
+                "start": segment.start,
+                "end": segment.end,
+                "speaker": speaker
+            })
+        
+        # Renumber speakers to SPEAKER_1, SPEAKER_2, etc.
+        speaker_mapping = {}
+        speaker_counter = 1
+        for segment in speaker_segments:
+            if segment["speaker"] not in speaker_mapping:
+                speaker_mapping[segment["speaker"]] = f"SPEAKER_{speaker_counter}"
+                speaker_counter += 1
+            segment["speaker"] = speaker_mapping[segment["speaker"]]
+        
+        logger.info(f"Found {len(speaker_mapping)} speakers in audio")
+        
+        # Step 2: Transcribe with timestamps
+        await websocket.send_json({
+            "type": "status",
+            "message": f"Transcribing audio with {len(speaker_mapping)} speakers..."
+        })
+        
+        # Use faster_whisper for transcription with word timestamps
+        if model_config["type"] == "faster_whisper":
+            fw_model = model["model"] if isinstance(model, dict) else model
+            
+            # Determine language
+            default_lang = None
+            if model_name and "ivrit" in model_name.lower():
+                default_lang = "he"
+            
+            # Transcribe with word-level timestamps for better alignment
+            segments, info = fw_model.transcribe(
+                audio_file,
+                language=language or default_lang,
+                word_timestamps=True,  # Enable word timestamps for better alignment
+                beam_size=5,
+                best_of=5,
+                patience=1,
+                temperature=0
+            )
+            
+            # Convert segments to list with timestamps
+            transcription_segments = []
+            for segment in segments:
+                transcription_segments.append({
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text.strip()
+                })
+            
+            detected_language = info.language if info else (language or 'unknown')
+            
+        else:
+            # Fallback for OpenAI whisper
+            result = model.transcribe(
+                audio_file,
+                language=language,
+                verbose=False,
+                word_timestamps=True
+            )
+            
+            transcription_segments = []
+            for segment in result.get("segments", []):
+                transcription_segments.append({
+                    "start": segment["start"],
+                    "end": segment["end"],
+                    "text": segment["text"].strip()
+                })
+            
+            detected_language = result.get("language", language or 'unknown')
+        
+        # Step 3: Align transcription with speaker segments
+        diarized_segments = []
+        
+        for speaker_seg in speaker_segments:
+            speaker_text = []
+            
+            # Find transcription segments that overlap with this speaker segment
+            for trans_seg in transcription_segments:
+                # Check for overlap
+                overlap_start = max(speaker_seg["start"], trans_seg["start"])
+                overlap_end = min(speaker_seg["end"], trans_seg["end"])
+                
+                if overlap_end > overlap_start:
+                    # There's overlap - this text belongs to this speaker
+                    # Calculate overlap percentage
+                    trans_duration = trans_seg["end"] - trans_seg["start"]
+                    overlap_duration = overlap_end - overlap_start
+                    
+                    if trans_duration > 0:
+                        overlap_pct = overlap_duration / trans_duration
+                        
+                        # Only include if significant overlap (>50%)
+                        if overlap_pct > 0.5:
+                            speaker_text.append(trans_seg["text"])
+            
+            # Combine text for this speaker segment
+            if speaker_text:
+                combined_text = " ".join(speaker_text)
+                diarized_segments.append({
+                    "start": speaker_seg["start"],
+                    "end": speaker_seg["end"],
+                    "speaker": speaker_seg["speaker"],
+                    "text": combined_text
+                })
+        
+        # Send incremental results
+        total_segments = len(diarized_segments)
+        for i, segment in enumerate(diarized_segments):
+            # Format timestamp
+            start_time = timedelta(seconds=int(segment["start"]))
+            end_time = timedelta(seconds=int(segment["end"]))
+            
+            # Format as [HH:MM:SS-HH:MM:SS] SPEAKER_X: "text"
+            formatted_output = (
+                f"[{str(start_time).split('.')[0]}-{str(end_time).split('.')[0]}] "
+                f"{segment['speaker']}: \"{segment['text']}\""
+            )
+            
+            await websocket.send_json({
+                "type": "transcription_chunk",
+                "text": formatted_output,
+                "chunk_index": i,
+                "total_chunks": total_segments,
+                "is_final": i == total_segments - 1,
+                "speaker": segment["speaker"],
+                "start": segment["start"],
+                "end": segment["end"]
+            })
+            
+            # Small delay to prevent overwhelming the client
+            if i % 5 == 0:
+                await asyncio.sleep(0.1)
+        
+        logger.info(f"Diarization complete: {len(diarized_segments)} segments")
+        return diarized_segments, detected_language
+        
+    except Exception as e:
+        logger.error(f"Diarization failed: {e}", exc_info=True)
+        # Fall back to regular transcription
+        await websocket.send_json({
+            "type": "status",
+            "message": "Diarization failed, falling back to regular transcription..."
+        })
+        
+        # Call the function directly (it's in the same file)
+        transcript, lang = await transcribe_with_incremental_output(
+            model, model_config, audio_file, language, websocket, model_name
+        )
+        return [{"text": transcript, "speaker": "SPEAKER_1"}], lang
 
 
 def should_use_ytdlp(url: str) -> bool:
@@ -2281,6 +2538,7 @@ async def websocket_transcribe(websocket: WebSocket):
         language = data.get("language")
         model_name = data.get("model", "whisper-v3-turbo")  # Default to multilingual model
         capture_mode = data.get("captureMode", "full")
+        enable_diarization = data.get("diarization", False)  # Speaker diarization flag
 
         if not url:
             await websocket.send_json({"error": "URL is required"})
@@ -2398,6 +2656,30 @@ async def websocket_transcribe(websocket: WebSocket):
                                 text = result.get('text', '').strip()
                                 det_lang = result.get('language', lang2 or 'unknown')
 
+                            elif model_config["type"] == "faster_whisper":
+                                # Use faster_whisper for transcription
+                                fw_model = model["model"] if isinstance(model, dict) else model
+                                
+                                # Determine default language
+                                default_lang = None
+                                if model2 and "ivrit" in model2.lower():
+                                    default_lang = "he"
+                                
+                                segments, info = fw_model.transcribe(
+                                    info["path"],
+                                    language=lang2 or default_lang,
+                                    beam_size=5,
+                                    best_of=5,
+                                    patience=1,
+                                    temperature=0
+                                )
+                                
+                                text_parts = []
+                                for segment in segments:
+                                    text_parts.append(segment.text.strip())
+                                text = " ".join(text_parts)
+                                det_lang = info.language if info else (lang2 or 'unknown')
+                                
                             elif model_config["type"] == "deepgram":
                                 # Use Deepgram v3 file transcription API
                                 try:
@@ -2419,7 +2701,7 @@ async def websocket_transcribe(websocket: WebSocket):
                                     await websocket.send_json({"error": f"Deepgram error: {e}"})
                                     return
                             else:
-                                await websocket.send_json({"error": "Unsupported model type"})
+                                await websocket.send_json({"error": f"Unsupported model type: {model_config.get('type')}"})
                                 return
 
                             if text:
@@ -2554,10 +2836,19 @@ async def websocket_transcribe(websocket: WebSocket):
                 model = load_model(model_name)
                 model_config = MODEL_CONFIGS[model_name]
 
-                # Use the new incremental transcription function for better UX
-                transcript, detected_language = await transcribe_with_incremental_output(
-                    model, model_config, audio_file, language, websocket, model_name, chunk_seconds=60
-                )
+                # Use diarization if requested
+                if enable_diarization:
+                    await websocket.send_json({"type": "status", "message": "🎭 Transcribing with speaker diarization..."})
+                    diarized_segments, detected_language = await transcribe_with_diarization(
+                        model, model_config, audio_file, language, websocket, model_name
+                    )
+                    # Combine all text for the transcript variable
+                    transcript = " ".join([seg.get("text", "") for seg in diarized_segments])
+                else:
+                    # Use the new incremental transcription function for better UX
+                    transcript, detected_language = await transcribe_with_incremental_output(
+                        model, model_config, audio_file, language, websocket, model_name, chunk_seconds=60
+                    )
 
                 # Send completion message
                 if transcript:

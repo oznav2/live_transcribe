@@ -46,9 +46,25 @@ RUN python3 -c "import faster_whisper; print('Downloading ivrit-ai/whisper-large
 # Also download the general large-v3-turbo as backup
 RUN python3 -c "import faster_whisper; print('Downloading large-v3-turbo...'); faster_whisper.WhisperModel('large-v3-turbo', device='cpu', compute_type='int8'); print('✓ Model downloaded successfully')"
 
-# Optional: Pre-download diarization models (with error handling to prevent build failure)
-# Note: This often requires authentication, so we'll skip it and download at runtime if needed
-RUN echo "Skipping diarization model pre-download - will download at runtime if needed"
+# Pre-download diarization models (with error handling to prevent build failure)
+# Try to download the models, but don't fail the build if it doesn't work
+RUN python3 -c "\
+try: \
+    from pyannote.audio import Pipeline; \
+    import os; \
+    token = os.getenv('HUGGINGFACE_TOKEN', 'hf_dummy'); \
+    print('Attempting to download diarization models...'); \
+    try: \
+        pipeline = Pipeline.from_pretrained('ivrit-ai/pyannote-speaker-diarization-3.1', use_auth_token=token); \
+        print('✓ Ivrit diarization model downloaded'); \
+    except: \
+        try: \
+            pipeline = Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token=token); \
+            print('✓ Standard diarization model downloaded'); \
+        except: \
+            print('⚠ Diarization models will be downloaded at runtime'); \
+except Exception as e: \
+    print(f'⚠ Pyannote not available or models cannot be pre-downloaded: {e}')" || echo "Diarization model pre-download skipped"
 
 # Verify installations
 RUN python3 -c "import torch; print('PyTorch version:', torch.__version__, 'CUDA available:', torch.cuda.is_available())"
