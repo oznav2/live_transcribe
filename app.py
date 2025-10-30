@@ -184,7 +184,7 @@ whisper_models = {}
 current_model = None
 current_model_name = None
 # Default model configuration - always use ivrit-ct2 with faster_whisper
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "ivrit-ct2")
+MODEL_SIZE = os.getenv("WHISPER_MODEL", "whisper-v3-turbo")  # Default to multilingual model
 logger.info(f"Default model: {MODEL_SIZE} (using faster_whisper with CT2 format)")
 
 # Model configurations
@@ -1048,9 +1048,16 @@ async def transcribe_with_incremental_output(
             
             def run_fw_transcription():
                 try:
+                    # For Ivrit models, use Hebrew as default only if it's an Ivrit model
+                    # For general models like whisper-v3-turbo, let it auto-detect
+                    default_lang = None
+                    if model_name and "ivrit" in model_name.lower():
+                        # Ivrit models are Hebrew-optimized, default to Hebrew if no language specified
+                        default_lang = "he"
+                    
                     segments, info = fw_model.transcribe(
                         audio_file,
-                        language=language or "he",
+                        language=language or default_lang,  # None means auto-detect
                         beam_size=int(os.getenv("IVRIT_BEAM_SIZE", "5")),
                         best_of=5,
                         patience=1,
@@ -1172,9 +1179,15 @@ async def transcribe_with_incremental_output(
                 # Use faster_whisper for chunks
                 fw_model = model["model"] if isinstance(model, dict) else model
                 try:
+                    # For Ivrit models, use Hebrew as default only if it's an Ivrit model
+                    default_lang = None
+                    if model_name and "ivrit" in model_name.lower():
+                        # Ivrit models are Hebrew-optimized, default to Hebrew if no language specified
+                        default_lang = "he"
+                    
                     segments, info = fw_model.transcribe(
                         chunk_file,
-                        language=language or "he",
+                        language=language or default_lang,  # None means auto-detect
                         beam_size=5,
                         best_of=5,
                         patience=1,
@@ -2255,7 +2268,7 @@ async def websocket_transcribe(websocket: WebSocket):
         data = await websocket.receive_json()
         url = data.get("url")
         language = data.get("language")
-        model_name = data.get("model", "ivrit-ct2")
+        model_name = data.get("model", "whisper-v3-turbo")  # Default to multilingual model
         capture_mode = data.get("captureMode", "full")
 
         if not url:

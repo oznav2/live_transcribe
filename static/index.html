@@ -654,11 +654,14 @@
             <div class="form-group">
                 <label class="form-label">Transcription Model</label>
                 <select id="modelSelect" class="form-select">
-                    <option value="deepgram">Deepgram Nova-2 (Cloud - Fastest & Best Quality) ⚡</option>
-                    <option value="ivrit-ct2">Ivrit AI Whisper V3 Turbo CT2 (Hebrew Optimized) 🚀</option>
-                    <option value="ivrit-v3-turbo">Ivrit V3 Turbo (Alternative Hebrew Model)</option>
-                    <option value="whisper-v3-turbo">Whisper Large V3 Turbo (Multilingual) 🌍</option>
+                    <option value="deepgram">Deepgram Nova-2 (Cloud - Best for English) ⚡</option>
+                    <option value="whisper-v3-turbo">Whisper Large V3 Turbo (Best for Multiple Languages) 🌍</option>
+                    <option value="ivrit-ct2">Ivrit AI Whisper V3 Turbo CT2 (Hebrew ONLY) 🇮🇱</option>
+                    <option value="ivrit-v3-turbo">Ivrit V3 Turbo (Hebrew ONLY - Alternative) 🇮🇱</option>
                 </select>
+                <small style="color: #999; display: block; margin-top: 4px;">
+                    ⚠️ Note: Ivrit models are optimized for Hebrew only. For English, use Deepgram or Whisper V3 Turbo.
+                </small>
             </div>
 
             <!-- Action Buttons -->
@@ -1005,7 +1008,7 @@
             }
 
             const language = languageSelect.value || null;
-            const model = modelSelect.value || 'ivrit-ct2';
+            const model = modelSelect.value || 'whisper-v3-turbo';
             const captureMode = scopeSelect.value || 'full';
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -1211,7 +1214,7 @@
                 return;
             }
             const language = languageSelect.value || null;
-            const model = modelSelect.value || 'ivrit-ct2';
+            const model = modelSelect.value || 'whisper-v3-turbo';
             updateStatus('connecting', 'Transcribing captured audio...');
             ws.send(JSON.stringify({ action: 'transcribe_capture', capture_id: captureId, language, model }));
             transcribeNowBtn.classList.add('hidden');

@@ -76,8 +76,9 @@ EXPOSE 8009
 # Environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8009
-# Default to new Ivrit CT2 model (faster_whisper based - no whisper.cpp needed)
-ENV WHISPER_MODEL=ivrit-ct2
+# Default to multilingual model (faster_whisper based - no whisper.cpp needed)
+# For Hebrew-specific content, you can override with WHISPER_MODEL=ivrit-ct2
+ENV WHISPER_MODEL=whisper-v3-turbo
 ENV IVRIT_MODEL_NAME=ivrit-ai/whisper-large-v3-turbo-ct2
 ENV IVRIT_MODEL_TYPE=ct2
 ENV IVRIT_DEVICE=cuda

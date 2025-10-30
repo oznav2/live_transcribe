@@ -16,7 +16,7 @@ services:
       #   - ivrit-ct2 (default, best for Hebrew transcription)
       #   - ivrit-v3-turbo (alias for ivrit-ct2)
       #   - whisper-v3-turbo (general v3 turbo model)
-      - WHISPER_MODEL=ivrit-ct2
+      - WHISPER_MODEL=whisper-v3-turbo  # Default to multilingual model, not Hebrew-only
       - IVRIT_MODEL_NAME=ivrit-ai/whisper-large-v3-turbo-ct2
       - IVRIT_MODEL_TYPE=ct2
       - IVRIT_DEVICE=cuda
