@@ -364,6 +364,229 @@
             color: #666;
             font-size: 12px;
         }
+
+        /* Progress Panel Styles */
+        .progress-panel {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .progress-panel.active {
+            display: block;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .progress-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+
+        .progress-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .progress-title i {
+            color: #0066cc;
+        }
+
+        .progress-percent {
+            font-size: 18px;
+            font-weight: 700;
+            color: #0066cc;
+        }
+
+        .progress-bar-container {
+            width: 100%;
+            height: 8px;
+            background: #2a2a2a;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 12px;
+            position: relative;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #0066cc 0%, #0099ff 100%);
+            border-radius: 4px;
+            transition: width 0.3s ease-out;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-bar-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .progress-bar-fill.download {
+            background: linear-gradient(90deg, #28a745 0%, #34d058 100%);
+        }
+
+        .progress-bar-fill.transcription {
+            background: linear-gradient(90deg, #7c3aed 0%, #a78bfa 100%);
+        }
+
+        .progress-bar-fill.indeterminate {
+            width: 100% !important;
+            background: linear-gradient(90deg, #7c3aed 0%, #a78bfa 50%, #7c3aed 100%);
+            background-size: 200% 100%;
+            animation: indeterminateProgress 2s linear infinite;
+        }
+
+        @keyframes indeterminateProgress {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        .progress-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        .progress-stat {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .progress-stat-label {
+            font-size: 11px;
+            color: #999;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .progress-stat-value {
+            font-size: 14px;
+            color: #fff;
+            font-weight: 600;
+        }
+
+        .progress-preview {
+            background: #0f0f0f;
+            border: 1px solid #2a2a2a;
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 12px;
+            max-height: 100px;
+            overflow-y: auto;
+            font-size: 12px;
+            line-height: 1.6;
+            color: #ccc;
+            font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+        }
+
+        .progress-preview::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .progress-preview::-webkit-scrollbar-track {
+            background: #1a1a1a;
+        }
+
+        .progress-preview::-webkit-scrollbar-thumb {
+            background: #3a3a3a;
+            border-radius: 3px;
+        }
+
+        .progress-preview-label {
+            font-size: 11px;
+            color: #999;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .progress-stage-indicator {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            padding: 12px;
+            background: #0f0f0f;
+            border-radius: 8px;
+        }
+
+        .progress-stage {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            padding: 8px;
+            border-radius: 6px;
+            transition: all 0.3s;
+        }
+
+        .progress-stage.active {
+            background: #1a1a1a;
+            border: 1px solid #0066cc;
+        }
+
+        .progress-stage.completed {
+            opacity: 0.5;
+        }
+
+        .progress-stage-icon {
+            font-size: 20px;
+            color: #666;
+        }
+
+        .progress-stage.active .progress-stage-icon {
+            color: #0066cc;
+            animation: pulse 2s infinite;
+        }
+
+        .progress-stage.completed .progress-stage-icon {
+            color: #28a745;
+        }
+
+        .progress-stage-label {
+            font-size: 11px;
+            color: #999;
+            text-align: center;
+        }
+
+        .progress-stage.active .progress-stage-label {
+            color: #fff;
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -476,6 +699,87 @@
                 </div>
             </div>
 
+            <!-- Stage Indicator (shows when processing) -->
+            <div id="stageIndicator" class="progress-stage-indicator hidden">
+                <div id="stage1" class="progress-stage">
+                    <i class="fas fa-download progress-stage-icon"></i>
+                    <div class="progress-stage-label">Download</div>
+                </div>
+                <div id="stage2" class="progress-stage">
+                    <i class="fas fa-cog progress-stage-icon"></i>
+                    <div class="progress-stage-label">Process</div>
+                </div>
+                <div id="stage3" class="progress-stage">
+                    <i class="fas fa-microphone-alt progress-stage-icon"></i>
+                    <div class="progress-stage-label">Transcribe</div>
+                </div>
+            </div>
+
+            <!-- Download Progress Panel -->
+            <div id="downloadProgress" class="progress-panel">
+                <div class="progress-header">
+                    <div class="progress-title">
+                        <i class="fas fa-download"></i>
+                        Downloading Audio
+                    </div>
+                    <div id="downloadPercent" class="progress-percent">0%</div>
+                </div>
+                <div class="progress-bar-container">
+                    <div id="downloadProgressBar" class="progress-bar-fill download" style="width: 0%"></div>
+                </div>
+                <div class="progress-stats">
+                    <div class="progress-stat">
+                        <div class="progress-stat-label">Downloaded</div>
+                        <div id="downloadSize" class="progress-stat-value">0 MB</div>
+                    </div>
+                    <div class="progress-stat">
+                        <div class="progress-stat-label">Speed</div>
+                        <div id="downloadSpeed" class="progress-stat-value">0 MB/s</div>
+                    </div>
+                    <div class="progress-stat">
+                        <div class="progress-stat-label">ETA</div>
+                        <div id="downloadETA" class="progress-stat-value">--</div>
+                    </div>
+                    <div class="progress-stat">
+                        <div class="progress-stat-label">Duration</div>
+                        <div id="downloadDuration" class="progress-stat-value">--</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Transcription Progress Panel -->
+            <div id="transcriptionProgress" class="progress-panel">
+                <div class="progress-header">
+                    <div class="progress-title">
+                        <i class="fas fa-microphone-alt"></i>
+                        Transcribing Audio
+                    </div>
+                    <div id="transcriptionPercent" class="progress-percent">0%</div>
+                </div>
+                <div class="progress-bar-container">
+                    <div id="transcriptionProgressBar" class="progress-bar-fill transcription" style="width: 0%"></div>
+                </div>
+                <div class="progress-stats">
+                    <div class="progress-stat">
+                        <div class="progress-stat-label">Chunks</div>
+                        <div id="transcriptionChunks" class="progress-stat-value">0 / 0</div>
+                    </div>
+                    <div class="progress-stat">
+                        <div class="progress-stat-label">ETA</div>
+                        <div id="transcriptionETA" class="progress-stat-value">--</div>
+                    </div>
+                </div>
+                <div id="transcriptionPreviewSection" class="hidden">
+                    <div class="progress-preview-label">
+                        <i class="fas fa-eye"></i>
+                        Live Preview
+                    </div>
+                    <div id="transcriptionPreview" class="progress-preview">
+                        Waiting for transcription...
+                    </div>
+                </div>
+            </div>
+
             <!-- Transcription Area -->
             <div class="transcription-header">
                 <div class="transcription-title">
@@ -539,21 +843,146 @@
 
         function addTranscription(text) {
             if (!text.trim()) return;
-            
+
             transcriptionText += (transcriptionText ? ' ' : '') + text;
-            
+
             const div = document.createElement('div');
             div.className = 'transcription-line';
             div.textContent = text;
-            
+
             if (transcriptionBox.querySelector('.transcription-empty')) {
                 transcriptionBox.innerHTML = '';
             }
-            
+
             transcriptionBox.appendChild(div);
             transcriptionBox.scrollTop = transcriptionBox.scrollHeight;
-            
+
             updateWordCount();
+        }
+
+        // Progress Panel Management
+        function showStageIndicator() {
+            document.getElementById('stageIndicator').classList.remove('hidden');
+        }
+
+        function hideStageIndicator() {
+            document.getElementById('stageIndicator').classList.add('hidden');
+        }
+
+        function updateStage(stageNum, status) {
+            // status: 'active', 'completed', or 'pending'
+            const stage = document.getElementById(`stage${stageNum}`);
+            stage.className = 'progress-stage';
+            if (status) {
+                stage.classList.add(status);
+            }
+        }
+
+        function formatTime(seconds) {
+            if (!seconds || seconds < 0) return '--';
+            if (seconds < 60) return `${seconds}s`;
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins}m ${secs}s`;
+        }
+
+        function updateDownloadProgress(data) {
+            const panel = document.getElementById('downloadProgress');
+            panel.classList.add('active');
+
+            document.getElementById('downloadPercent').textContent = `${data.percent}%`;
+            document.getElementById('downloadProgressBar').style.width = `${data.percent}%`;
+            document.getElementById('downloadSize').textContent = `${data.downloaded_mb} MB`;
+            document.getElementById('downloadSpeed').textContent = `${data.speed_mbps} MB/s`;
+            document.getElementById('downloadETA').textContent = formatTime(data.eta_seconds);
+
+            if (data.current_time && data.target_duration) {
+                document.getElementById('downloadDuration').textContent =
+                    `${Math.round(data.current_time)}s / ${data.target_duration}s`;
+            }
+
+            // Update stage indicator
+            showStageIndicator();
+            updateStage(1, 'active');
+            updateStage(2, 'pending');
+            updateStage(3, 'pending');
+        }
+
+        function hideDownloadProgress() {
+            document.getElementById('downloadProgress').classList.remove('active');
+            updateStage(1, 'completed');
+        }
+
+        function updateTranscriptionProgress(data) {
+            const panel = document.getElementById('transcriptionProgress');
+            panel.classList.add('active');
+
+            document.getElementById('transcriptionPercent').textContent = `${data.percent}%`;
+            document.getElementById('transcriptionProgressBar').style.width = `${data.percent}%`;
+            document.getElementById('transcriptionProgressBar').classList.remove('indeterminate');
+            document.getElementById('transcriptionChunks').textContent =
+                `${data.chunks_processed} / ${data.chunks_total}`;
+            document.getElementById('transcriptionETA').textContent = formatTime(data.eta_seconds);
+
+            // Update stage indicator
+            showStageIndicator();
+            updateStage(1, 'completed');
+            updateStage(2, 'completed');
+            updateStage(3, 'active');
+        }
+
+        function updateTranscriptionStatus(data) {
+            // Show indeterminate progress with elapsed time
+            const panel = document.getElementById('transcriptionProgress');
+            panel.classList.add('active');
+
+            // Show indeterminate animation (no specific %)
+            document.getElementById('transcriptionPercent').textContent = '...';
+            const progressBar = document.getElementById('transcriptionProgressBar');
+            progressBar.classList.add('indeterminate');
+            progressBar.style.width = '100%';
+
+            // Show elapsed time instead of chunks/ETA
+            const elapsed = data.elapsed_seconds || 0;
+            const mins = Math.floor(elapsed / 60);
+            const secs = elapsed % 60;
+            const timeStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+            document.getElementById('transcriptionChunks').textContent = `${timeStr} elapsed`;
+            document.getElementById('transcriptionETA').textContent = '--';
+
+            // Update stage indicator
+            showStageIndicator();
+            updateStage(1, 'completed');
+            updateStage(2, 'completed');
+            updateStage(3, 'active');
+        }
+
+        function showTranscriptionPreview(text) {
+            const section = document.getElementById('transcriptionPreviewSection');
+            const preview = document.getElementById('transcriptionPreview');
+
+            section.classList.remove('hidden');
+
+            // Append new text to preview
+            const currentText = preview.textContent === 'Waiting for transcription...' ? '' : preview.textContent;
+            preview.textContent = currentText + (currentText ? ' ' : '') + text;
+
+            // Auto-scroll preview
+            preview.scrollTop = preview.scrollHeight;
+        }
+
+        function hideTranscriptionProgress() {
+            document.getElementById('transcriptionProgress').classList.remove('active');
+            updateStage(3, 'completed');
+        }
+
+        function resetProgressPanels() {
+            document.getElementById('downloadProgress').classList.remove('active');
+            document.getElementById('transcriptionProgress').classList.remove('active');
+            document.getElementById('transcriptionPreviewSection').classList.add('hidden');
+            document.getElementById('transcriptionPreview').textContent = 'Waiting for transcription...';
+            hideStageIndicator();
         }
 
         function startTranscription() {
@@ -589,20 +1018,62 @@
 
                 if (data.type === 'status') {
                     updateStatus('connecting', data.message);
+
+                    // Hide download progress when moving to transcription
+                    if (data.message.includes('transcrib') || data.message.includes('Transcrib')) {
+                        hideDownloadProgress();
+                        updateStage(2, 'active');
+                    }
+                } else if (data.type === 'download_progress') {
+                    // Handle download progress updates
+                    updateDownloadProgress(data);
+                    updateStatus('active', `Downloading: ${data.percent}% (${formatTime(data.eta_seconds)} remaining)`);
+                } else if (data.type === 'transcription_progress') {
+                    // Handle transcription progress updates (with real %)
+                    updateTranscriptionProgress(data);
+                    updateStatus('active', `Transcribing: ${data.percent}% (${formatTime(data.eta_seconds)} remaining)`);
+                } else if (data.type === 'transcription_status') {
+                    // Handle transcription status updates (indeterminate with elapsed time)
+                    updateTranscriptionStatus(data);
+                    updateStatus('active', data.message || 'Transcribing...');
+                } else if (data.type === 'transcription_preview') {
+                    // Handle incremental preview text (every 4 chunks)
+                    showTranscriptionPreview(data.text);
                 } else if (data.type === 'transcription') {
                     updateStatus('active', 'Transcribing...');
                     addTranscription(data.text);
+
+                    // Also show in preview if panels are visible
+                    if (!document.getElementById('transcriptionProgress').classList.contains('active')) {
+                        showStageIndicator();
+                        updateStage(1, 'completed');
+                        updateStage(2, 'completed');
+                        updateStage(3, 'active');
+                    }
                 } else if (data.type === 'capture_ready') {
                     captureId = data.capture_id;
                     updateStatus('idle', 'Capture ready. Click "Transcribe Now"');
                     transcribeNowBtn.classList.remove('hidden');
                     stopBtn.classList.add('hidden');
+                    resetProgressPanels();
                 } else if (data.type === 'complete') {
                     updateStatus('idle', 'Transcription complete');
+                    hideTranscriptionProgress();
+
+                    // Mark all stages as completed
+                    updateStage(1, 'completed');
+                    updateStage(2, 'completed');
+                    updateStage(3, 'completed');
+
+                    setTimeout(() => {
+                        hideStageIndicator();
+                    }, 2000);
+
                     stopTranscription();
                 } else if (data.error) {
                     updateStatus('error', `Error: ${data.error}`);
                     alert(`Error: ${data.error}`);
+                    resetProgressPanels();
                     stopTranscription();
                 }
             };
@@ -611,6 +1082,7 @@
                 console.error('WebSocket error:', error);
                 updateStatus('error', 'Connection error');
                 alert('Connection error. Please try again.');
+                resetProgressPanels();
                 stopTranscription();
             };
 
@@ -628,7 +1100,7 @@
                 ws.close();
                 ws = null;
             }
-            
+
             startBtn.classList.remove('hidden');
             stopBtn.classList.add('hidden');
             transcribeNowBtn.classList.add('hidden');
@@ -637,6 +1109,11 @@
             languageSelect.disabled = false;
             modelSelect.disabled = false;
             scopeSelect.disabled = false;
+
+            // Reset progress panels after a short delay
+            setTimeout(() => {
+                resetProgressPanels();
+            }, 2000);
         }
 
         function clearTranscription() {
@@ -649,6 +1126,7 @@
                 </div>
             `;
             updateWordCount();
+            resetProgressPanels();
         }
 
         function copyToClipboard() {

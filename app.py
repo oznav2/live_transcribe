@@ -200,9 +200,10 @@ def should_use_ytdlp(url: str) -> bool:
     return any(pattern in url.lower() for pattern in ytdlp_patterns)
 
 
-def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: int = 60, websocket = None) -> Optional[str]:
+async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: int = 60, websocket = None) -> Optional[str]:
     """
     Download audio using ffmpeg directly (proven working method from test_deepgram.py)
+    Now async with progress monitoring support
 
     Args:
         url: URL to download
@@ -243,18 +244,25 @@ def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: int = 60
 
         logger.info(f"Running: ffmpeg -i {url[:50]}... -t {duration} ...")
 
-        # Run ffmpeg in background and monitor progress
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # Run ffmpeg asynchronously (following pattern from line 1374)
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
 
         # Monitor progress if websocket provided
         if websocket:
-            import asyncio
             import time
             start_time = time.time()
             last_update = 0
 
-            while process.poll() is None:
-                time.sleep(0.5)  # Check every 500ms
+            while process.returncode is None:
+                await asyncio.sleep(0.5)  # Non-blocking sleep
+
+                # Check if process completed
+                if process.returncode is not None:
+                    break
 
                 # Read progress file
                 if os.path.exists(progress_file):
@@ -269,38 +277,40 @@ def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: int = 60
 
                             # Extract time progress
                             if 'out_time_ms' in progress_data:
-                                current_ms = int(progress_data['out_time_ms']) / 1000000  # Convert to seconds
-                                target_duration = duration if duration > 0 else 60  # Estimate
-                                percent = min((current_ms / target_duration) * 100, 99)
+                                try:
+                                    current_ms = int(progress_data['out_time_ms']) / 1000000  # Convert to seconds
+                                    target_duration = duration if duration > 0 else 60  # Estimate for complete files
+                                    percent = min((current_ms / target_duration) * 100, 99)
 
-                                # Calculate download speed
-                                if os.path.exists(audio_file):
-                                    file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
-                                    elapsed = time.time() - start_time
-                                    speed_mbps = file_size_mb / elapsed if elapsed > 0 else 0
-                                    eta_seconds = ((target_duration - current_ms) / current_ms * elapsed) if current_ms > 0 else 0
+                                    # Calculate download speed
+                                    if os.path.exists(audio_file):
+                                        file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+                                        elapsed = time.time() - start_time
+                                        speed_mbps = file_size_mb / elapsed if elapsed > 0 else 0
+                                        eta_seconds = ((target_duration - current_ms) / current_ms * elapsed) if current_ms > 0 else 0
 
-                                    # Send progress update (throttle to every 1 second)
-                                    if time.time() - last_update >= 1.0:
-                                        try:
-                                            asyncio.run(websocket.send_json({
-                                                "type": "download_progress",
-                                                "percent": round(percent, 1),
-                                                "downloaded_mb": round(file_size_mb, 2),
-                                                "speed_mbps": round(speed_mbps, 2),
-                                                "eta_seconds": int(eta_seconds),
-                                                "current_time": round(current_ms, 1),
-                                                "target_duration": target_duration
-                                            }))
-                                            last_update = time.time()
-                                        except Exception as e:
-                                            logger.debug(f"Progress update failed: {e}")
+                                        # Send progress update (throttle to every 1 second)
+                                        if time.time() - last_update >= 1.0:
+                                            try:
+                                                await websocket.send_json({
+                                                    "type": "download_progress",
+                                                    "percent": round(percent, 1),
+                                                    "downloaded_mb": round(file_size_mb, 2),
+                                                    "speed_mbps": round(speed_mbps, 2),
+                                                    "eta_seconds": int(eta_seconds),
+                                                    "current_time": round(current_ms, 1),
+                                                    "target_duration": target_duration
+                                                })
+                                                last_update = time.time()
+                                            except Exception as e:
+                                                logger.debug(f"Progress update failed: {e}")
+                                except (ValueError, ZeroDivisionError) as e:
+                                    logger.debug(f"Progress parsing error: {e}")
                     except Exception as e:
-                        logger.debug(f"Progress parsing error: {e}")
-        else:
-            # No websocket, just wait for completion
-            process.wait()
+                        logger.debug(f"Progress file read error: {e}")
 
+        # Wait for process to complete
+        stdout_output, stderr_output = await process.communicate()
         result = process
 
         # Clean up progress file
@@ -311,8 +321,7 @@ def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: int = 60
             pass
 
         if result.returncode != 0:
-            # Extract the actual error from stderr
-            stderr_output = result.stderr.read() if hasattr(result.stderr, 'read') else result.stderr
+            # Extract the actual error from stderr (now properly captured via communicate())
             stderr_lines = stderr_output.split('\n') if stderr_output else []
             error_line = None
             for line in stderr_lines:
@@ -326,7 +335,7 @@ def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: int = 60
                 logger.error(f"❌ ffmpeg download failed with return code {result.returncode}")
 
             # Check for common error patterns
-            stderr_full = result.stderr.lower()
+            stderr_full = stderr_output.lower() if stderr_output else ""
             if '410' in stderr_full or 'gone' in stderr_full:
                 logger.error("💡 URL has expired. Please get a fresh URL from the source.")
             elif '403' in stderr_full or 'forbidden' in stderr_full:
@@ -1053,7 +1062,7 @@ async def transcribe_vod_with_deepgram(websocket: WebSocket, url: str, language:
         await websocket.send_json({"type": "status", "message": "⬇️ Step 2/3: Downloading audio from URL using ffmpeg (60 seconds)..."})
 
         # Use ffmpeg download method (same as test_deepgram.py - proven working)
-        audio_file = download_audio_with_ffmpeg(url, format='wav', duration=60)
+        audio_file = await download_audio_with_ffmpeg(url, format='wav', duration=60, websocket=websocket)
         if not audio_file:
             # Provide detailed error message based on logs
             error_detail = "Failed to download audio from URL.\n\n"
@@ -1898,7 +1907,7 @@ async def websocket_transcribe(websocket: WebSocket):
                     audio_file = download_audio_with_ytdlp(url, language, format='wav')
                 else:
                     # Use ffmpeg for direct URLs - download complete file (no duration limit for VOD)
-                    audio_file = download_audio_with_ffmpeg(url, format='wav', duration=0, websocket=websocket)  # 0 = no limit
+                    audio_file = await download_audio_with_ffmpeg(url, format='wav', duration=0, websocket=websocket)  # 0 = no limit
 
                 if not audio_file:
                     await websocket.send_json({"error": "Failed to download audio file. Check server logs for details."})
@@ -1907,95 +1916,83 @@ async def websocket_transcribe(websocket: WebSocket):
                 file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
                 await websocket.send_json({"type": "status", "message": f"✅ Downloaded {file_size_mb:.1f} MB. Starting batch transcription..."})
 
-                # Batch transcribe the complete file
+                # Batch transcribe the complete file with elapsed time tracking
                 model = load_model(model_name)
                 model_config = MODEL_CONFIGS[model_name]
 
-                if model_config["type"] == "openai":
-                    # OpenAI Whisper
-                    use_fp16 = torch.cuda.is_available()
-                    try:
-                        result = model.transcribe(audio_file, language=language, fp16=use_fp16, verbose=False)
-                    except Exception as e:
-                        logger.warning(f"GPU/FP16 transcribe failed: {e}. Retrying with fp16=False.")
-                        result = model.transcribe(audio_file, language=language, fp16=False, verbose=False)
+                import time
+                start_time = time.time()
 
+                if model_config["type"] == "openai":
+                    # OpenAI Whisper - run in executor to avoid blocking
+                    await websocket.send_json({"type": "transcription_status", "message": "Starting transcription with OpenAI Whisper...", "elapsed_seconds": 0})
+
+                    def run_whisper_transcription():
+                        use_fp16 = torch.cuda.is_available()
+                        try:
+                            return model.transcribe(audio_file, language=language, fp16=use_fp16, verbose=False)
+                        except Exception as e:
+                            logger.warning(f"GPU/FP16 transcribe failed: {e}. Retrying with fp16=False.")
+                            return model.transcribe(audio_file, language=language, fp16=False, verbose=False)
+
+                    # Run in background thread and monitor
+                    loop = asyncio.get_event_loop()
+                    transcription_task = loop.run_in_executor(None, run_whisper_transcription)
+
+                    # Send periodic status updates while transcribing
+                    while not transcription_task.done():
+                        await asyncio.sleep(5)
+                        elapsed = int(time.time() - start_time)
+                        mins = elapsed // 60
+                        secs = elapsed % 60
+                        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                        await websocket.send_json({
+                            "type": "transcription_status",
+                            "message": f"Transcribing... ({time_str} elapsed)",
+                            "elapsed_seconds": elapsed
+                        })
+
+                    result = await transcription_task
                     transcript = result.get('text', '').strip()
                     detected_language = result.get('language', language or 'unknown')
 
                 elif model_config["type"] == "ggml":
-                    # whisper.cpp (Ivrit model) - Process in chunks for progress tracking
+                    # whisper.cpp (Ivrit model) - run in executor to avoid blocking
+                    await websocket.send_json({"type": "transcription_status", "message": "Starting transcription with Ivrit model...", "elapsed_seconds": 0})
+
                     whisper_bin = os.getenv("WHISPER_CPP_PATH", "whisper.cpp/build/bin/whisper-cli")
                     model_path = model_config["path"]
+                    cmd = [whisper_bin, '-m', model_path, '-f', audio_file, '-l', language or 'auto', '-nt']
 
-                    # Get audio duration for progress calculation
-                    audio_duration = get_audio_duration_seconds(audio_file)
-                    if not audio_duration:
-                        audio_duration = 60  # Fallback estimate
+                    def run_whisper_cpp():
+                        return subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
-                    # Split audio into 30-second chunks for progress tracking
-                    await websocket.send_json({"type": "status", "message": "📊 Preparing audio chunks for transcription..."})
-                    chunk_duration = 30
-                    temp_dir, chunks = split_audio_into_chunks(audio_file, chunk_seconds=chunk_duration, overlap_seconds=2)
+                    # Run in background thread and monitor
+                    loop = asyncio.get_event_loop()
+                    transcription_task = loop.run_in_executor(None, run_whisper_cpp)
 
-                    total_chunks = len(chunks)
-                    await websocket.send_json({"type": "status", "message": f"🚀 Starting transcription of {total_chunks} chunks..."})
-
-                    transcript_parts = []
-                    import time
-                    start_time = time.time()
-
-                    for idx, (chunk_idx, chunk_path) in enumerate(chunks):
-                        # Transcribe this chunk
-                        cmd = [whisper_bin, '-m', model_path, '-f', chunk_path, '-l', language or 'auto', '-nt', '--no-prints']
-                        chunk_result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-
-                        if chunk_result.returncode == 0:
-                            chunk_text = chunk_result.stdout.strip()
-                            # Clean up whisper.cpp output
-                            lines = [line.strip() for line in chunk_text.split('\n') if line.strip()]
-                            content_lines = [
-                                line for line in lines
-                                if not line.startswith('[') and '%]' not in line and not line.startswith('whisper_')
-                            ]
-                            chunk_text = ' '.join(content_lines)
-
-                            if chunk_text:
-                                transcript_parts.append(chunk_text)
-
-                                # Send incremental preview every 4 chunks or if text is substantial
-                                if (idx + 1) % 4 == 0 or len(chunk_text) > 100:
-                                    await websocket.send_json({
-                                        "type": "transcription_preview",
-                                        "text": chunk_text,
-                                        "language": language or 'he'
-                                    })
-
-                        # Calculate and send progress
-                        percent = ((idx + 1) / total_chunks) * 100
-                        elapsed = time.time() - start_time
-                        avg_time_per_chunk = elapsed / (idx + 1)
-                        remaining_chunks = total_chunks - (idx + 1)
-                        eta_seconds = int(avg_time_per_chunk * remaining_chunks)
-
+                    # Send periodic status updates while transcribing
+                    while not transcription_task.done():
+                        await asyncio.sleep(5)
+                        elapsed = int(time.time() - start_time)
+                        mins = elapsed // 60
+                        secs = elapsed % 60
+                        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
                         await websocket.send_json({
-                            "type": "transcription_progress",
-                            "percent": round(percent, 1),
-                            "chunks_processed": idx + 1,
-                            "chunks_total": total_chunks,
-                            "eta_seconds": eta_seconds
+                            "type": "transcription_status",
+                            "message": f"Transcribing... ({time_str} elapsed)",
+                            "elapsed_seconds": elapsed
                         })
 
-                    # Combine all chunks
-                    transcript = ' '.join(transcript_parts)
-                    detected_language = language or 'he'
+                    result = await transcription_task
 
-                    # Cleanup chunk directory
-                    try:
-                        import shutil
-                        shutil.rmtree(temp_dir, ignore_errors=True)
-                    except:
-                        pass
+                    if result.returncode != 0:
+                        logger.error(f"whisper.cpp failed: {result.stderr}")
+                        await websocket.send_json({"error": f"Transcription failed: {result.stderr[:200]}"})
+                        return
+
+                    transcript = result.stdout.strip()
+                    detected_language = language or 'he'
 
                 # Send complete transcript
                 if transcript:
