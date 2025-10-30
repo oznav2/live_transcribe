@@ -1,0 +1,118 @@
+# Enhanced Dockerfile with Ivrit AI models support
+# Based on PyTorch with CUDA 12.1 for optimal performance
+
+# Use PyTorch base image with CUDA 12.1 support (matching ivrit-ai requirements)
+FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime AS base
+
+# Set working directory
+WORKDIR /app
+
+# Configure LD_LIBRARY_PATH for CUDA libraries (critical for ivrit models)
+ENV LD_LIBRARY_PATH="/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cublas/lib:${LD_LIBRARY_PATH}"
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    git \
+    curl \
+    wget \
+    build-essential \
+    cmake \
+    portaudio19-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first for better caching
+COPY requirements.ivrit.txt requirements.txt
+
+# Install Python dependencies
+# First ensure torch is properly installed (should be from base image)
+RUN pip install --no-cache-dir torch==2.4.1 torchaudio huggingface-hub==0.26.5
+
+# Install Ivrit AI package with all extras (includes faster_whisper, pyannote, etc.)
+RUN pip install --no-cache-dir ivrit[all]==0.1.8
+
+# Install faster_whisper explicitly to ensure it's available
+RUN pip install --no-cache-dir faster-whisper==1.0.3
+
+# Install other requirements
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install yt-dlp separately to ensure latest version
+RUN pip install --no-cache-dir yt-dlp
+
+# Pre-download and cache Ivrit models during build
+# This ensures models are available immediately at runtime
+RUN python3 -c "import faster_whisper; print('Loading ivrit-ai/whisper-large-v3-turbo-ct2...'); m = faster_whisper.WhisperModel('ivrit-ai/whisper-large-v3-turbo-ct2', device='cpu', compute_type='int8')"
+RUN python3 -c "import faster_whisper; print('Loading large-v3-turbo...'); m = faster_whisper.WhisperModel('large-v3-turbo', device='cpu', compute_type='int8')"
+
+# Optional: Pre-download diarization models (comment out if not needed to save space)
+RUN python3 -c "import pyannote.audio; print('Loading speaker diarization model...'); p = pyannote.audio.Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token=False)" || echo "Diarization model download skipped"
+
+# Verify installations
+RUN python3 -c "import torch; print('PyTorch version:', torch.__version__, 'CUDA available:', torch.cuda.is_available())"
+RUN python3 -c "import faster_whisper; print('faster_whisper installed successfully')"
+RUN python3 -c "import ivrit; print('ivrit package installed successfully')"
+RUN python3 -c "from deepgram import DeepgramClient; print('Deepgram SDK installed')"
+
+# Copy application code
+COPY app.py .
+COPY static/ ./static/
+
+# Create necessary directories
+RUN mkdir -p /root/.cache/whisper && \
+    mkdir -p /app/models && \
+    mkdir -p /app/cache/audio && \
+    mkdir -p /app/cache/downloads && \
+    mkdir -p /app/cache/captures && \
+    mkdir -p /app/logs
+
+# Copy the old GGML model as fallback (optional)
+COPY models/ivrit-whisper-large-v3-turbo.bin /app/models/ 2>/dev/null || echo "GGML model not found, skipping"
+
+# Copy whisper.cpp binaries if they exist (for fallback to GGML)
+COPY whisper.cpp/build/bin/whisper-cli /app/whisper.cpp/build/bin/whisper-cli 2>/dev/null || echo "whisper.cpp not found, skipping"
+COPY whisper.cpp/build/src/libwhisper.so* /app/whisper.cpp/build/src/ 2>/dev/null || echo "whisper.cpp libs not found, skipping"
+COPY whisper.cpp/build/ggml/src/libggml*.so* /app/whisper.cpp/build/ggml/src/ 2>/dev/null || echo "ggml libs not found, skipping"
+
+# Expose port
+EXPOSE 8009
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8009
+# Default to new Ivrit CT2 model
+ENV WHISPER_MODEL=ivrit-ct2
+ENV IVRIT_MODEL_NAME=ivrit-ai/whisper-large-v3-turbo-ct2
+ENV IVRIT_MODEL_TYPE=ct2
+ENV IVRIT_DEVICE=cuda
+ENV IVRIT_COMPUTE_TYPE=float16
+ENV IVRIT_BEAM_SIZE=5
+# Fallback GGML paths (if needed)
+ENV IVRIT_MODEL_PATH=/app/models/ivrit-whisper-large-v3-turbo.bin
+ENV WHISPER_CPP_PATH=/app/whisper.cpp/build/bin/whisper-cli
+# Audio processing
+ENV AUDIO_CACHE_ENABLED=true
+# CUDA settings
+ENV CUDA_VISIBLE_DEVICES=0
+ENV NVIDIA_VISIBLE_DEVICES=all
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=3 \
+    CMD python3 -c "import requests; r = requests.get('http://localhost:8009/health', timeout=10); r.raise_for_status()" || exit 1
+
+# Run the application
+CMD ["python3", "app.py"]
+
+##############################################
+# Multi-stage variant with smaller final image
+##############################################
+FROM base AS runtime
+
+# Clean up unnecessary files to reduce image size
+RUN pip cache purge && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Set the entrypoint
+ENTRYPOINT ["python3"]
+CMD ["app.py"]

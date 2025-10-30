@@ -23,6 +23,22 @@ import whisper
 import aiohttp
 import torch
 
+# Try to import faster_whisper for Ivrit CT2 models
+try:
+    import faster_whisper
+    FASTER_WHISPER_AVAILABLE = True
+except ImportError:
+    FASTER_WHISPER_AVAILABLE = False
+    logger.warning("faster_whisper not available - Ivrit CT2 models will not work")
+
+# Try to import ivrit package
+try:
+    import ivrit
+    IVRIT_PACKAGE_AVAILABLE = True
+except ImportError:
+    IVRIT_PACKAGE_AVAILABLE = False
+    logger.warning("ivrit package not available - Advanced Ivrit features disabled")
+
 # Check if whisper.cpp CLI is available
 WHISPER_CPP_PATH = os.getenv("WHISPER_CPP_PATH", "/app/whisper.cpp/build/bin/whisper-cli")
 WHISPER_CPP_AVAILABLE = os.path.exists(WHISPER_CPP_PATH)
@@ -127,7 +143,26 @@ MODEL_CONFIGS = {
     "medium": {"type": "openai", "name": "medium"},
     "large": {"type": "openai", "name": "large"},
     "ivrit-large-v3-turbo": {"type": "ggml", "path": os.getenv("IVRIT_MODEL_PATH", "models/ivrit-whisper-large-v3-turbo.bin")},
-    "deepgram": {"type": "deepgram", "model": "nova-2", "language": "en"}
+    "deepgram": {"type": "deepgram", "model": "nova-2", "language": "en"},
+    # New Ivrit CT2 models (faster_whisper based)
+    "ivrit-ct2": {
+        "type": "faster_whisper",
+        "name": os.getenv("IVRIT_MODEL_NAME", "ivrit-ai/whisper-large-v3-turbo-ct2"),
+        "device": os.getenv("IVRIT_DEVICE", "cuda"),
+        "compute_type": os.getenv("IVRIT_COMPUTE_TYPE", "float16")
+    },
+    "ivrit-v3-turbo": {
+        "type": "faster_whisper",
+        "name": "ivrit-ai/whisper-large-v3-turbo-ct2",
+        "device": "cuda",
+        "compute_type": "float16"
+    },
+    "whisper-v3-turbo": {
+        "type": "faster_whisper",
+        "name": "large-v3-turbo",
+        "device": "cuda",
+        "compute_type": "float16"
+    }
 }
 
 # Audio processing configuration
@@ -270,12 +305,64 @@ def load_model(model_name: str):
         except Exception as e:
             logger.warning(f"Failed to load model on {device}: {e}. Falling back to CPU.")
             model = whisper.load_model(config["name"], device="cpu")
+    
+    elif config["type"] == "faster_whisper":
+        if not FASTER_WHISPER_AVAILABLE:
+            raise ValueError("faster_whisper is not installed. Cannot load Ivrit CT2 models.")
+        
+        model_name_or_path = config.get("name", "ivrit-ai/whisper-large-v3-turbo-ct2")
+        device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        compute_type = config.get("compute_type", "float16" if device == "cuda" else "int8")
+        
+        logger.info(f"Loading faster_whisper model: {model_name_or_path}")
+        logger.info(f"Device: {device}, Compute type: {compute_type}")
+        
+        try:
+            # Load the faster_whisper model
+            model = faster_whisper.WhisperModel(
+                model_name_or_path,
+                device=device,
+                compute_type=compute_type,
+                num_workers=1,
+                download_root="/root/.cache/whisper"
+            )
+            # Wrap in a dict to maintain consistency with other model types
+            model = {
+                "type": "faster_whisper",
+                "model": model,
+                "config": config
+            }
+            logger.info(f"Successfully loaded faster_whisper model: {model_name_or_path}")
+        except Exception as e:
+            logger.error(f"Failed to load faster_whisper model: {e}")
+            # Fallback to CPU with int8
+            if device == "cuda":
+                logger.info("Attempting CPU fallback with int8 compute type...")
+                try:
+                    model = faster_whisper.WhisperModel(
+                        model_name_or_path,
+                        device="cpu",
+                        compute_type="int8",
+                        num_workers=1
+                    )
+                    model = {
+                        "type": "faster_whisper",
+                        "model": model,
+                        "config": config
+                    }
+                    logger.info("Successfully loaded model on CPU")
+                except Exception as e2:
+                    raise ValueError(f"Failed to load faster_whisper model on both GPU and CPU: {e2}")
+            else:
+                raise
+    
     elif config["type"] == "ggml":
         if not WHISPER_CPP_AVAILABLE:
             raise ValueError(f"whisper.cpp CLI not found at: {WHISPER_CPP_PATH}")
         logger.info(f"Loading GGML model from: {config['path']}")
         # For GGML models, we store the path and use whisper.cpp CLI
         model = {"type": "ggml_cli", "path": config["path"], "whisper_cpp_path": WHISPER_CPP_PATH}
+    
     else:
         raise ValueError(f"Unknown model type: {config['type']}")
 
@@ -860,7 +947,60 @@ async def transcribe_with_incremental_output(
         logger.info(f"Short audio ({audio_duration}s), processing as single chunk")
         
         # Transcribe entire file
-        if model_config["type"] == "openai":
+        if model_config["type"] == "faster_whisper":
+            # Use faster_whisper for Ivrit CT2 models
+            fw_model = model["model"] if isinstance(model, dict) else model
+            
+            def run_fw_transcription():
+                try:
+                    segments, info = fw_model.transcribe(
+                        audio_file,
+                        language=language or "he",
+                        beam_size=int(os.getenv("IVRIT_BEAM_SIZE", "5")),
+                        best_of=5,
+                        patience=1,
+                        length_penalty=1,
+                        temperature=0,
+                        compression_ratio_threshold=2.4,
+                        log_prob_threshold=-1.0,
+                        no_speech_threshold=0.6,
+                        word_timestamps=False
+                    )
+                    # Collect segments into text
+                    text_parts = []
+                    for segment in segments:
+                        text_parts.append(segment.text)
+                    return {
+                        'text': ' '.join(text_parts),
+                        'language': info.language if info else (language or 'he')
+                    }
+                except Exception as e:
+                    logger.error(f"faster_whisper transcription failed: {e}")
+                    raise
+            
+            # Run with progress monitoring
+            loop = asyncio.get_event_loop()
+            task = loop.run_in_executor(None, run_fw_transcription)
+            
+            while not task.done():
+                await asyncio.sleep(2)
+                elapsed = time.time() - start_time
+                metrics = calculate_progress_metrics(audio_duration, elapsed)
+                
+                await websocket.send_json({
+                    "type": "transcription_progress",
+                    "audio_duration": audio_duration,
+                    "percentage": metrics["percentage"],
+                    "eta_seconds": metrics["eta_seconds"],
+                    "speed": metrics["speed"],
+                    "elapsed_seconds": int(elapsed)
+                })
+            
+            result = await task
+            transcript = result.get('text', '').strip()
+            detected_language = result.get('language', language or 'he')
+            
+        elif model_config["type"] == "openai":
             def run_transcription():
                 use_fp16 = torch.cuda.is_available()
                 try:
@@ -979,7 +1119,32 @@ async def transcribe_with_incremental_output(
             chunk_start = time.time()
             
             # Transcribe chunk
-            if model_config["type"] == "openai":
+            if model_config["type"] == "faster_whisper":
+                # Use faster_whisper for chunks
+                fw_model = model["model"] if isinstance(model, dict) else model
+                try:
+                    segments, info = fw_model.transcribe(
+                        chunk_file,
+                        language=language or "he",
+                        beam_size=5,
+                        best_of=5,
+                        patience=1,
+                        temperature=0,
+                        compression_ratio_threshold=2.4,
+                        no_speech_threshold=0.6,
+                        word_timestamps=False
+                    )
+                    text_parts = []
+                    for segment in segments:
+                        text_parts.append(segment.text)
+                    chunk_text = ' '.join(text_parts).strip()
+                    if i == 0 and info and info.language:
+                        detected_language = info.language
+                except Exception as e:
+                    logger.error(f"faster_whisper chunk transcription failed: {e}")
+                    chunk_text = ""
+            
+            elif model_config["type"] == "openai":
                 use_fp16 = torch.cuda.is_available()
                 try:
                     result = model.transcribe(chunk_file, language=language, fp16=use_fp16, verbose=False)

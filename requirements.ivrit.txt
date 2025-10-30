@@ -1,0 +1,54 @@
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+websockets>=13.0
+
+# Ivrit AI and faster_whisper for Hebrew transcription
+ivrit[all]==0.1.8
+faster-whisper==1.0.3
+# PyTorch and audio (should match base image)
+torch==2.4.1
+torchaudio
+huggingface-hub==0.26.5
+
+# Whisper & Audio Processing (keep for backward compatibility)
+openai-whisper==20231117
+
+# NumPy/SciPy versions compatible with PyTorch
+numpy<2
+scipy<1.14
+
+# FFmpeg Python wrapper
+ffmpeg-python==0.2.0
+
+# URL Download & Processing
+yt-dlp>=2024.10.7
+
+# Deepgram SDK
+deepgram-sdk==5.2.0
+
+# Speaker diarization and recognition
+pyannote.audio>=3.1.0
+speechbrain>=0.5.16
+
+# CTranslate2 for model optimization
+ctranslate2>=4.5.0
+
+# Utilities
+python-dotenv==1.0.0
+aiofiles==23.2.1
+pydantic==2.12.3
+pydantic-settings==2.6.0
+requests==2.32.3
+webrtcvad==2.0.10
+pydub==0.25.1
+
+# Live Streaming Support
+aiohttp>=3.9.0
+PyAudio==0.2.13
+
+# Additional ML utilities
+transformers>=4.36.0
+accelerate>=0.25.0
+safetensors>=0.4.1
