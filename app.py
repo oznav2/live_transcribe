@@ -1014,11 +1014,22 @@ def split_audio_into_chunks(audio_path: str, chunk_seconds: int, overlap_seconds
 
 async def transcribe_with_incremental_output(
     model, model_config: dict, audio_file: str, language: Optional[str], 
-    websocket: WebSocket, chunk_seconds: int = 60
+    websocket: WebSocket, model_name: str = None, chunk_seconds: int = 60
 ) -> Tuple[str, str]:
     """
     Transcribe audio with incremental output and detailed progress.
-    Returns (full_transcript, detected_language)
+    
+    Args:
+        model: The loaded transcription model
+        model_config: Model configuration dictionary
+        audio_file: Path to audio file
+        language: Language code or None for auto-detect
+        websocket: WebSocket connection for progress updates
+        model_name: Name of the model (needed for language detection logic)
+        chunk_seconds: Size of audio chunks in seconds
+        
+    Returns:
+        (full_transcript, detected_language)
     """
     import time
     start_time = time.time()
@@ -2499,7 +2510,7 @@ async def websocket_transcribe(websocket: WebSocket):
                 
                 # Use the new incremental transcription function
                 transcription_text, detected_language = await transcribe_with_incremental_output(
-                    model, model_config, audio_file, language, websocket
+                    model, model_config, audio_file, language, websocket, model_name
                 )
 
                 # Send complete message
@@ -2545,7 +2556,7 @@ async def websocket_transcribe(websocket: WebSocket):
 
                 # Use the new incremental transcription function for better UX
                 transcript, detected_language = await transcribe_with_incremental_output(
-                    model, model_config, audio_file, language, websocket, chunk_seconds=60
+                    model, model_config, audio_file, language, websocket, model_name, chunk_seconds=60
                 )
 
                 # Send completion message
