@@ -97,6 +97,10 @@ async def lifespan(app: FastAPI):
         # Initialize capture directory
         init_capture_dir()
         logger.info("Capture directory initialized for first-60s mode")
+        
+        # Initialize download cache directory
+        init_download_cache_dir()
+        logger.info("Download cache initialized for URL-based caching")
     except Exception as e:
         logger.error(f"Failed to load default Whisper model: {e}")
         raise
@@ -148,11 +152,101 @@ CACHE_ENABLED = os.getenv("AUDIO_CACHE_ENABLED", "true").lower() == "true"
 CAPTURE_DIR = Path("cache/captures")
 CAPTURES = {}
 
+# URL-based download cache to avoid re-downloads when switching models
+DOWNLOAD_CACHE_DIR = Path("cache/downloads")
+URL_DOWNLOADS = {}  # Maps URL hash to downloaded file path
+
 def init_capture_dir():
     try:
         CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         logger.warning(f"Failed to create capture dir: {e}")
+
+
+def init_download_cache_dir():
+    """Initialize download cache directory for URL-based audio caching"""
+    try:
+        DOWNLOAD_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        # Clean old downloads (older than 24 hours)
+        cutoff_time = datetime.now() - timedelta(hours=24)
+        for cache_file in DOWNLOAD_CACHE_DIR.glob("*.wav"):
+            try:
+                file_time = datetime.fromtimestamp(cache_file.stat().st_mtime)
+                if file_time < cutoff_time:
+                    cache_file.unlink()
+                    # Remove from URL_DOWNLOADS if present
+                    for url_hash, path in list(URL_DOWNLOADS.items()):
+                        if path == str(cache_file):
+                            del URL_DOWNLOADS[url_hash]
+            except Exception as e:
+                logger.warning(f"Failed to clean old download cache: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to create download cache dir: {e}")
+
+
+def get_url_hash(url: str) -> str:
+    """Generate a unique hash for a URL to use as cache key"""
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
+def get_cached_download(url: str) -> Optional[str]:
+    """Check if we have a cached download for this URL"""
+    url_hash = get_url_hash(url)
+    
+    # Check in-memory cache first
+    if url_hash in URL_DOWNLOADS:
+        cached_path = URL_DOWNLOADS[url_hash]
+        if os.path.exists(cached_path):
+            logger.info(f"Found cached download for URL (in-memory): {cached_path}")
+            return cached_path
+        else:
+            # File was deleted, remove from cache
+            del URL_DOWNLOADS[url_hash]
+    
+    # Check disk cache
+    cache_pattern = f"{url_hash}_*.wav"
+    for cached_file in DOWNLOAD_CACHE_DIR.glob(cache_pattern):
+        if cached_file.exists():
+            URL_DOWNLOADS[url_hash] = str(cached_file)
+            logger.info(f"Found cached download for URL (disk): {cached_file}")
+            return str(cached_file)
+    
+    return None
+
+
+def save_download_to_cache(url: str, audio_file: str) -> str:
+    """Save a downloaded audio file to URL cache and return the cached path"""
+    try:
+        url_hash = get_url_hash(url)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        cached_filename = f"{url_hash}_{timestamp}.wav"
+        cached_path = DOWNLOAD_CACHE_DIR / cached_filename
+        
+        # If the file is already in the cache directory, just update the mapping
+        if DOWNLOAD_CACHE_DIR in Path(audio_file).parents:
+            URL_DOWNLOADS[url_hash] = audio_file
+            logger.info(f"Audio file already in cache directory: {audio_file}")
+            return audio_file
+        
+        # Copy the file to cache directory
+        shutil.copy2(audio_file, cached_path)
+        URL_DOWNLOADS[url_hash] = str(cached_path)
+        logger.info(f"Cached download for URL: {cached_path}")
+        
+        # Clean up the original temp file if it's outside cache dir
+        try:
+            if os.path.exists(audio_file) and DOWNLOAD_CACHE_DIR not in Path(audio_file).parents:
+                os.unlink(audio_file)
+                temp_dir = os.path.dirname(audio_file)
+                if temp_dir and '/tmp' in temp_dir and os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception as e:
+            logger.debug(f"Failed to clean up temp file: {e}")
+        
+        return str(cached_path)
+    except Exception as e:
+        logger.error(f"Failed to cache download: {e}")
+        return audio_file  # Return original file on cache failure
 
 
 def load_model(model_name: str):
@@ -200,17 +294,30 @@ def should_use_ytdlp(url: str) -> bool:
     return any(pattern in url.lower() for pattern in ytdlp_patterns)
 
 
-async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: int = 60, websocket = None) -> Optional[str]:
+async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: int = 60, websocket = None, use_cache: bool = True) -> Optional[str]:
     """
     Download audio using ffmpeg directly (proven working method from test_deepgram.py)
-    Now async with progress monitoring support
+    Now async with progress monitoring support and URL caching
 
     Args:
         url: URL to download
         format: Audio format (wav or m4a)
         duration: Duration in seconds to download (default: 60, 0 = complete file)
         websocket: Optional WebSocket connection for progress updates
+        use_cache: Whether to check/use cached downloads
     """
+    
+    # Check cache first if enabled and duration is 0 (complete file)
+    if use_cache and duration == 0:
+        cached_file = get_cached_download(url)
+        if cached_file:
+            if websocket:
+                file_size_mb = os.path.getsize(cached_file) / (1024 * 1024)
+                await websocket.send_json({
+                    "type": "status",
+                    "message": f"✅ Using cached audio file ({file_size_mb:.1f} MB)"
+                })
+            return cached_file
     if duration == 0:
         logger.info(f"Downloading COMPLETE audio file with ffmpeg (format: {format})...")
     else:
@@ -429,6 +536,9 @@ async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: in
         if os.path.exists(audio_file):
             file_size = os.path.getsize(audio_file)
             logger.info(f"Successfully downloaded audio: {audio_file} ({file_size / 1024:.1f} KB)")
+            # Cache the download if duration is 0 (complete file) and caching is enabled
+            if use_cache and duration == 0:
+                audio_file = save_download_to_cache(url, audio_file)
             return audio_file
         else:
             logger.error(f"Audio file not created: {audio_file}")
@@ -447,16 +557,24 @@ async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: in
         return None
 
 
-def download_audio_with_ytdlp(url: str, language: Optional[str] = None, format: str = 'wav') -> Optional[str]:
+def download_audio_with_ytdlp(url: str, language: Optional[str] = None, format: str = 'wav', use_cache: bool = True) -> Optional[str]:
     """
-    Download and normalize audio from URL using yt-dlp
+    Download and normalize audio from URL using yt-dlp with caching support
     Returns path to audio file or None on failure
 
     Args:
         url: URL to download from
         language: Optional language hint
         format: Output format ('wav' for Whisper, 'm4a' for Deepgram/general use)
+        use_cache: Whether to check/use cached downloads
     """
+    
+    # Check cache first if enabled
+    if use_cache:
+        cached_file = get_cached_download(url)
+        if cached_file:
+            logger.info(f"Using cached download from yt-dlp: {cached_file}")
+            return cached_file
     try:
         # Create temporary directory and file path for download
         # yt-dlp needs a template path without extension (it adds the extension)
@@ -490,6 +608,9 @@ def download_audio_with_ytdlp(url: str, language: Optional[str] = None, format: 
 
         if result.returncode == 0 and os.path.exists(output_path):
             logger.info(f"Successfully downloaded audio: {output_path}")
+            # Cache the download if caching is enabled
+            if use_cache:
+                output_path = save_download_to_cache(url, output_path)
             return output_path
         else:
             logger.error(f"yt-dlp failed: {result.stderr}")
@@ -1102,10 +1223,11 @@ async def transcribe_vod_with_deepgram(websocket: WebSocket, url: str, language:
             await websocket.send_json({"type": "status", "message": "⚠️ Direct URL method failed. Switching to download method..."})
 
         # FALLBACK: Download with ffmpeg (proven working method) and upload to Deepgram
-        await websocket.send_json({"type": "status", "message": "⬇️ Step 2/3: Downloading audio from URL using ffmpeg (60 seconds)..."})
+        await websocket.send_json({"type": "status", "message": "⬇️ Step 2/3: Downloading audio from URL using ffmpeg..."})
 
-        # Use ffmpeg download method (same as test_deepgram.py - proven working)
-        audio_file = await download_audio_with_ffmpeg(url, format='wav', duration=60, websocket=websocket)
+        # Use ffmpeg download method - download complete file for better transcription and caching
+        # Using duration=0 for complete file which enables caching
+        audio_file = await download_audio_with_ffmpeg(url, format='wav', duration=0, websocket=websocket)
         if not audio_file:
             # Provide detailed error message based on logs
             error_detail = "Failed to download audio from URL.\n\n"
@@ -1277,13 +1399,17 @@ async def transcribe_vod_with_deepgram(websocket: WebSocket, url: str, language:
                 await websocket.send_json({"error": f"Deepgram transcription failed: {str(e)}"})
 
         finally:
-            # Cleanup downloaded file and its temp directory
+            # Cleanup downloaded file and its temp directory (only if not in cache)
             try:
                 if audio_file and os.path.exists(audio_file):
-                    os.unlink(audio_file)
-                    temp_dir = os.path.dirname(audio_file)
-                    if temp_dir and os.path.exists(temp_dir):
-                        shutil.rmtree(temp_dir, ignore_errors=True)
+                    # Only delete if not in download cache
+                    if DOWNLOAD_CACHE_DIR not in Path(audio_file).parents:
+                        os.unlink(audio_file)
+                        temp_dir = os.path.dirname(audio_file)
+                        if temp_dir and os.path.exists(temp_dir) and '/tmp' in temp_dir:
+                            shutil.rmtree(temp_dir, ignore_errors=True)
+                    else:
+                        logger.debug(f"Keeping cached Deepgram download: {audio_file}")
             except Exception as e:
                 logger.debug(f"Cleanup warning: {e}")
 
@@ -1864,28 +1990,59 @@ async def websocket_transcribe(websocket: WebSocket):
                             shutil.rmtree(temp_dir, ignore_errors=True)
                     except Exception:
                         pass
-                    if os.path.exists(audio_file):
+                    # Only delete if not in cache
+                    if os.path.exists(audio_file) and DOWNLOAD_CACHE_DIR not in Path(audio_file).parents:
                         os.unlink(audio_file)
 
                 return
 
-            # Transcribe the downloaded file directly (default path)
+            # Transcribe the downloaded file directly (default path) WITH PROGRESS UPDATES
             await websocket.send_json({"type": "status", "message": "Transcribing downloaded audio..."})
 
             try:
                 model = load_model(model_name)
                 model_config = MODEL_CONFIGS[model_name]
+                
+                import time
+                start_time = time.time()
 
                 if model_config["type"] == "openai":
-                    use_fp16 = torch.cuda.is_available()
-                    try:
-                        result = model.transcribe(audio_file, language=language, fp16=use_fp16, verbose=False)
-                    except Exception as e:
-                        logger.warning(f"GPU/FP16 ytdlp transcribe failed: {e}. Retrying with fp16=False.")
-                        result = model.transcribe(audio_file, language=language, fp16=False, verbose=False)
+                    # Send initial status
+                    await websocket.send_json({"type": "transcription_status", "message": "Starting transcription with OpenAI Whisper...", "elapsed_seconds": 0})
+                    
+                    def run_whisper_transcription():
+                        use_fp16 = torch.cuda.is_available()
+                        try:
+                            return model.transcribe(audio_file, language=language, fp16=use_fp16, verbose=False)
+                        except Exception as e:
+                            logger.warning(f"GPU/FP16 ytdlp transcribe failed: {e}. Retrying with fp16=False.")
+                            return model.transcribe(audio_file, language=language, fp16=False, verbose=False)
+                    
+                    # Run in background thread and monitor progress
+                    loop = asyncio.get_event_loop()
+                    transcription_task = loop.run_in_executor(None, run_whisper_transcription)
+                    
+                    # Send periodic status updates while transcribing
+                    while not transcription_task.done():
+                        await asyncio.sleep(5)
+                        elapsed = int(time.time() - start_time)
+                        mins = elapsed // 60
+                        secs = elapsed % 60
+                        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                        await websocket.send_json({
+                            "type": "transcription_status",
+                            "message": f"Transcribing... ({time_str} elapsed)",
+                            "elapsed_seconds": elapsed
+                        })
+                    
+                    result = await transcription_task
                     transcription_text = result.get('text', '').strip()
                     detected_language = result.get('language', 'unknown')
+                    
                 elif model_config["type"] == "ggml":
+                    # Send initial status
+                    await websocket.send_json({"type": "transcription_status", "message": "Starting transcription with Ivrit model...", "elapsed_seconds": 0})
+                    
                     # Use whisper.cpp CLI - output text directly instead of JSON
                     cmd = [
                         model["whisper_cpp_path"],
@@ -1898,8 +2055,29 @@ async def websocket_transcribe(websocket: WebSocket):
                     ]
                     if language:
                         cmd.extend(["-l", language])
-
-                    result = subprocess.run(cmd, capture_output=True, text=True)
+                    
+                    def run_whisper_cpp():
+                        return subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                    
+                    # Run in background thread and monitor progress
+                    loop = asyncio.get_event_loop()
+                    transcription_task = loop.run_in_executor(None, run_whisper_cpp)
+                    
+                    # Send periodic status updates while transcribing
+                    while not transcription_task.done():
+                        await asyncio.sleep(5)
+                        elapsed = int(time.time() - start_time)
+                        mins = elapsed // 60
+                        secs = elapsed % 60
+                        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+                        await websocket.send_json({
+                            "type": "transcription_status",
+                            "message": f"Transcribing... ({time_str} elapsed)",
+                            "elapsed_seconds": elapsed
+                        })
+                    
+                    result = await transcription_task
+                    
                     if result.returncode == 0:
                         # whisper.cpp outputs text directly to stdout
                         transcription_text = result.stdout.strip()
@@ -1929,9 +2107,12 @@ async def websocket_transcribe(websocket: WebSocket):
                 await websocket.send_json({"type": "complete", "message": "Transcription complete"})
 
             finally:
-                # Cleanup downloaded file
-                if os.path.exists(audio_file):
+                # Cleanup downloaded file (only if not in cache)
+                if os.path.exists(audio_file) and DOWNLOAD_CACHE_DIR not in Path(audio_file).parents:
                     os.unlink(audio_file)
+                    logger.debug(f"Cleaned up temporary file: {audio_file}")
+                elif os.path.exists(audio_file):
+                    logger.debug(f"Keeping cached file: {audio_file}")
 
             return
 
@@ -2076,9 +2257,12 @@ async def websocket_transcribe(websocket: WebSocket):
                     await websocket.send_json({"type": "status", "message": "⚠️ No speech detected in audio file"})
                     await websocket.send_json({"type": "complete", "message": "Transcription complete (no speech detected)"})
 
-                # Cleanup
+                # Cleanup (only delete if not in download cache)
                 try:
-                    os.unlink(audio_file)
+                    if DOWNLOAD_CACHE_DIR not in Path(audio_file).parents:
+                        os.unlink(audio_file)
+                    else:
+                        logger.debug(f"Keeping cached file: {audio_file}")
                 except:
                     pass
 
@@ -2203,6 +2387,59 @@ async def clear_cache():
             deleted_count += 1
 
         return {"success": True, "deleted": deleted_count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/download-cache/stats")
+async def download_cache_stats():
+    """Get download cache statistics"""
+    try:
+        cache_files = list(DOWNLOAD_CACHE_DIR.glob("*.wav"))
+        total_size = sum(f.stat().st_size for f in cache_files)
+        
+        # Get cache details
+        cache_details = []
+        for cache_file in cache_files:
+            cache_details.append({
+                "filename": cache_file.name,
+                "size_mb": round(cache_file.stat().st_size / (1024 * 1024), 2),
+                "modified": datetime.fromtimestamp(cache_file.stat().st_mtime).isoformat(),
+                "url_hash": cache_file.name.split('_')[0] if '_' in cache_file.name else 'unknown'
+            })
+        
+        return {
+            "enabled": True,
+            "file_count": len(cache_files),
+            "total_size_mb": round(total_size / (1024 * 1024), 2),
+            "max_age_hours": 24,
+            "cache_directory": str(DOWNLOAD_CACHE_DIR),
+            "files": cache_details
+        }
+    except Exception as e:
+        return {"enabled": True, "error": str(e)}
+
+
+@app.post("/api/download-cache/clear")
+async def clear_download_cache():
+    """Clear all cached download files"""
+    try:
+        deleted_count = 0
+        deleted_size = 0
+        
+        for cache_file in DOWNLOAD_CACHE_DIR.glob("*.wav"):
+            deleted_size += cache_file.stat().st_size
+            cache_file.unlink()
+            deleted_count += 1
+        
+        # Clear in-memory cache
+        URL_DOWNLOADS.clear()
+        
+        return {
+            "success": True, 
+            "deleted_files": deleted_count,
+            "freed_space_mb": round(deleted_size / (1024 * 1024), 2)
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
