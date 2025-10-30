@@ -22,31 +22,22 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.ivrit.txt requirements.txt
+COPY requirements.ivrit.txt .
 
 # Install Python dependencies
-# First ensure torch is properly installed (should be from base image)
-RUN pip install --no-cache-dir torch==2.4.1 torchaudio huggingface-hub==0.26.5
-
-# Install Ivrit AI package with all extras (includes faster_whisper, pyannote, etc.)
-RUN pip install --no-cache-dir ivrit[all]==0.1.8
-
-# Install faster_whisper explicitly to ensure it's available
-RUN pip install --no-cache-dir faster-whisper==1.0.3
-
-# Install other requirements
-RUN pip install --no-cache-dir -r requirements.txt
+# Install all requirements from requirements.ivrit.txt
+RUN pip install --no-cache-dir -r requirements.ivrit.txt
 
 # Install yt-dlp separately to ensure latest version
 RUN pip install --no-cache-dir yt-dlp
 
-# Pre-download and cache Ivrit models during build
+# Pre-download and cache Ivrit models during build (with error handling)
 # This ensures models are available immediately at runtime
-RUN python3 -c "import faster_whisper; print('Loading ivrit-ai/whisper-large-v3-turbo-ct2...'); m = faster_whisper.WhisperModel('ivrit-ai/whisper-large-v3-turbo-ct2', device='cpu', compute_type='int8')"
-RUN python3 -c "import faster_whisper; print('Loading large-v3-turbo...'); m = faster_whisper.WhisperModel('large-v3-turbo', device='cpu', compute_type='int8')"
+RUN python3 -c "import faster_whisper; print('Loading ivrit-ai/whisper-large-v3-turbo-ct2...'); m = faster_whisper.WhisperModel('ivrit-ai/whisper-large-v3-turbo-ct2', device='cpu', compute_type='int8')" || echo "Ivrit model download skipped"
+RUN python3 -c "import faster_whisper; print('Loading large-v3-turbo...'); m = faster_whisper.WhisperModel('large-v3-turbo', device='cpu', compute_type='int8')" || echo "Large-v3-turbo model download skipped"
 
-# Optional: Pre-download diarization models (comment out if not needed to save space)
-RUN python3 -c "import pyannote.audio; print('Loading speaker diarization model...'); p = pyannote.audio.Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token=False)" || echo "Diarization model download skipped"
+# Optional: Pre-download diarization models (with error handling to prevent build failure)
+RUN python3 -c "import pyannote.audio; print('Loading speaker diarization model...'); p = pyannote.audio.Pipeline.from_pretrained('pyannote/speaker-diarization-3.1', use_auth_token=False)" || echo "Diarization model download skipped - will download at runtime"
 
 # Verify installations
 RUN python3 -c "import torch; print('PyTorch version:', torch.__version__, 'CUDA available:', torch.cuda.is_available())"
@@ -67,12 +58,39 @@ RUN mkdir -p /root/.cache/whisper && \
     mkdir -p /app/logs
 
 # Copy the old GGML model as fallback (optional)
-COPY models/ivrit-whisper-large-v3-turbo.bin /app/models/ 2>/dev/null || echo "GGML model not found, skipping"
+# Note: GGML model copying is commented out - uncomment and place model file if needed
+# COPY models/ivrit-whisper-large-v3-turbo.bin /app/models/
 
 # Copy whisper.cpp binaries if they exist (for fallback to GGML)
-COPY whisper.cpp/build/bin/whisper-cli /app/whisper.cpp/build/bin/whisper-cli 2>/dev/null || echo "whisper.cpp not found, skipping"
-COPY whisper.cpp/build/src/libwhisper.so* /app/whisper.cpp/build/src/ 2>/dev/null || echo "whisper.cpp libs not found, skipping"
-COPY whisper.cpp/build/ggml/src/libggml*.so* /app/whisper.cpp/build/ggml/src/ 2>/dev/null || echo "ggml libs not found, skipping"
+# Using RUN commands with conditional copying since COPY doesn't support shell redirection
+RUN mkdir -p /app/whisper.cpp/build/bin /app/whisper.cpp/build/src /app/whisper.cpp/build/ggml/src
+# Copy whisper.cpp directory if it exists, otherwise create empty structure
+RUN if [ -d "whisper.cpp" ]; then \
+        cp -r whisper.cpp /tmp/; \
+        echo "whisper.cpp directory copied to temp"; \
+    else \
+        mkdir -p /tmp/whisper.cpp/build/{bin,src,ggml/src}; \
+        echo "whisper.cpp not found, created empty structure"; \
+    fi
+RUN if [ -f /tmp/whisper.cpp/build/bin/whisper-cli ]; then \
+        cp /tmp/whisper.cpp/build/bin/whisper-cli /app/whisper.cpp/build/bin/ && \
+        echo "whisper-cli copied successfully"; \
+    else \
+        echo "whisper.cpp not found, skipping"; \
+    fi
+RUN if [ -f /tmp/whisper.cpp/build/src/libwhisper.so ]; then \
+        cp /tmp/whisper.cpp/build/src/libwhisper.so* /app/whisper.cpp/build/src/ 2>/dev/null || true && \
+        echo "whisper libs copied successfully"; \
+    else \
+        echo "whisper.cpp libs not found, skipping"; \
+    fi
+RUN if [ -f /tmp/whisper.cpp/build/ggml/src/libggml.so ]; then \
+        cp /tmp/whisper.cpp/build/ggml/src/libggml*.so* /app/whisper.cpp/build/ggml/src/ 2>/dev/null || true && \
+        echo "ggml libs copied successfully"; \
+    else \
+        echo "ggml libs not found, skipping"; \
+    fi
+RUN rm -rf /tmp/whisper.cpp
 
 # Expose port
 EXPOSE 8009

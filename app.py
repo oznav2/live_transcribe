@@ -19,7 +19,13 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from uuid import uuid4
 
-import whisper
+try:
+    import whisper
+    OPENAI_WHISPER_AVAILABLE = True
+except ImportError:
+    OPENAI_WHISPER_AVAILABLE = False
+    print("openai-whisper not available - OpenAI Whisper models will not work")
+
 import aiohttp
 import torch
 
@@ -29,7 +35,7 @@ try:
     FASTER_WHISPER_AVAILABLE = True
 except ImportError:
     FASTER_WHISPER_AVAILABLE = False
-    logger.warning("faster_whisper not available - Ivrit CT2 models will not work")
+    print("faster_whisper not available - Ivrit CT2 models will not work")
 
 # Try to import ivrit package
 try:
@@ -37,7 +43,7 @@ try:
     IVRIT_PACKAGE_AVAILABLE = True
 except ImportError:
     IVRIT_PACKAGE_AVAILABLE = False
-    logger.warning("ivrit package not available - Advanced Ivrit features disabled")
+    print("ivrit package not available - Advanced Ivrit features disabled")
 
 # Check if whisper.cpp CLI is available
 WHISPER_CPP_PATH = os.getenv("WHISPER_CPP_PATH", "/app/whisper.cpp/build/bin/whisper-cli")
@@ -297,6 +303,9 @@ def load_model(model_name: str):
     config = MODEL_CONFIGS[model_name]
 
     if config["type"] == "openai":
+        if not OPENAI_WHISPER_AVAILABLE:
+            raise ValueError("openai-whisper is not installed. Cannot load OpenAI Whisper models.")
+        
         logger.info(f"Loading OpenAI Whisper model: {config['name']}")
         device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Using device: {device} (CUDA available: {torch.cuda.is_available()})")
@@ -1265,6 +1274,9 @@ def transcribe_chunk(model_config: dict, model, chunk_path: str, language: Optio
 
     try:
         if model_config["type"] == "openai":
+            if not OPENAI_WHISPER_AVAILABLE:
+                raise ValueError("openai-whisper is not installed. Cannot transcribe with OpenAI Whisper models.")
+            
             use_fp16 = torch.cuda.is_available()
             try:
                 result = model.transcribe(chunk_path, language=language, fp16=use_fp16, verbose=False)
@@ -1303,6 +1315,14 @@ def transcribe_chunk(model_config: dict, model, chunk_path: str, language: Optio
                 detected_language = language or 'he'
             else:
                 transcription_text = ""
+        elif model_config["type"] == "faster_whisper":
+            if not FASTER_WHISPER_AVAILABLE:
+                raise ValueError("faster_whisper is not installed. Cannot transcribe with faster_whisper models.")
+            
+            # Use faster_whisper model for transcription
+            segments, info = model.transcribe(chunk_path, language=language)
+            transcription_text = ' '.join([segment.text for segment in segments]).strip()
+            detected_language = info.language if hasattr(info, 'language') else (language or 'unknown')
     except Exception as e:
         logger.error(f"Chunk transcription error ({chunk_path}): {e}")
 
