@@ -655,12 +655,9 @@
                 <label class="form-label">Transcription Model</label>
                 <select id="modelSelect" class="form-select">
                     <option value="deepgram">Deepgram Nova-2 (Cloud - Fastest & Best Quality) ⚡</option>
-                    <option value="large">Whisper Large (Local)</option>
-                    <option value="ivrit-large-v3-turbo">Ivrit Large V3 Turbo (Hebrew Optimized)</option>
-                    <option value="medium">Whisper Medium (Local)</option>
-                    <option value="small">Whisper Small (Local)</option>
-                    <option value="base">Whisper Base (Local)</option>
-                    <option value="tiny">Whisper Tiny (Local)</option>
+                    <option value="ivrit-ct2">Ivrit AI Whisper V3 Turbo CT2 (Hebrew Optimized) 🚀</option>
+                    <option value="ivrit-v3-turbo">Ivrit V3 Turbo (Alternative Hebrew Model)</option>
+                    <option value="whisper-v3-turbo">Whisper Large V3 Turbo (Multilingual) 🌍</option>
                 </select>
             </div>
 
@@ -1008,7 +1005,7 @@
             }
 
             const language = languageSelect.value || null;
-            const model = modelSelect.value || 'large';
+            const model = modelSelect.value || 'ivrit-ct2';
             const captureMode = scopeSelect.value || 'full';
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -1214,7 +1211,7 @@
                 return;
             }
             const language = languageSelect.value || null;
-            const model = modelSelect.value || 'large';
+            const model = modelSelect.value || 'ivrit-ct2';
             updateStatus('connecting', 'Transcribing captured audio...');
             ws.send(JSON.stringify({ action: 'transcribe_capture', capture_id: captureId, language, model }));
             transcribeNowBtn.classList.add('hidden');
