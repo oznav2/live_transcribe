@@ -1,6 +1,8 @@
-# 🎙️ Live Audio Stream Transcription
+# 🎙️ VibeGram - Live Audio Stream Transcription
 
 A real-time audio transcription application that streams audio from URLs (m3u8, video links, audio files) and transcribes them live using multiple transcription engines: **Deepgram Nova-3** (cloud), **Ivrit** (Hebrew-optimized), or **OpenAI Whisper** (local). Inspired by [Vibe](https://github.com/thewh1teagle/vibe).
+
+![Live Transcription Screenshot](static/vibegram.png)
 
 ## ✨ Features
 
@@ -13,20 +15,29 @@ A real-time audio transcription application that streams audio from URLs (m3u8, 
 - **YouTube & Video Platform Support**: Download and transcribe from YouTube, Vimeo, Facebook, Twitter, TikTok, and more using yt-dlp
 - **Multiple Format Support**: Works with m3u8 (HLS), direct video URLs, audio files, and streaming media
 - **Audio Caching**: Intelligent caching system reduces CPU usage by 60% for repeated content (local models only)
+- **VOD Detection**: Automatically detects Video-on-Demand vs live streams and optimizes transcription path
 
 ### User Experience
+- **Real-time Progress Tracking**:
+  - Download progress with %, MB, speed, and ETA
+  - Transcription elapsed time updates every 5 seconds
+  - Multi-stage visual indicator (Download → Process → Transcribe)
+  - Never see a blank screen during long operations
 - **Real-time Display**: See transcription results live as they're processed
 - **Language Support**: Auto-detect or manually specify from 50+ languages
 - **Easy Export**: Copy to clipboard or download as text file
 - **Model Selection**: Choose your transcription model from the UI
 - **Beautiful Web UI**: Modern, responsive interface with real-time updates and dark theme
+- **Enhanced Error Messages**: Detailed error reporting with helpful troubleshooting suggestions
 
 ### Performance & DevOps
+- **Async Processing**: Fully async architecture with asyncio.create_subprocess_exec for non-blocking operations
 - **Extreme Performance Mode**: 5-second chunks with 1-second overlap for fast processing
-- **Async Processing**: Non-blocking subprocess execution for true real-time updates
+- **Advanced Audio Processing**: Loudnorm filter (-16 LUFS), 44.1kHz stereo output
 - **Cache Management**: Built-in API endpoints to monitor and manage audio cache
-- **Docker Ready**: Simple deployment with Docker and docker-compose
-- **Health Monitoring**: Built-in health check endpoints
+- **Docker Ready**: Multi-stage builds with CUDA 11.8 support
+- **GPU Acceleration**: Full NVIDIA GPU support for whisper.cpp with CUDA backend
+- **Health Monitoring**: Comprehensive health check and GPU diagnostics endpoints
 
 ## 🚀 Quick Start with Docker
 
@@ -180,13 +191,23 @@ Access at: `http://localhost:8000`
 
 ```
 live_transcribe/
-├── app.py                  # Main FastAPI application (~800 lines)
-│   ├── Model Management    # Whisper, Ivrit, Deepgram loaders
-│   ├── URL Handling        # yt-dlp integration, URL detection
-│   ├── Audio Caching       # SHA256-based cache system
-│   ├── Stream Processing   # FFmpeg stream handling
-│   ├── Transcription       # Local & cloud transcription
+├── app.py                  # Main FastAPI application (~2159 lines, 22 functions)
+│   ├── Model Management    # Whisper, Ivrit, Deepgram loaders (load_model)
+│   ├── URL Handling        # yt-dlp integration, URL detection (should_use_ytdlp)
+│   ├── Audio Download      # Async FFmpeg download with progress (download_audio_with_ffmpeg)
+│   ├── Audio Caching       # SHA256-based cache system (generate_cache_key, get_cached_audio)
+│   ├── Stream Processing   # FFmpeg stream handling (split_audio_into_chunks)
+│   ├── Transcription       # Local & cloud transcription (transcribe_audio_stream)
+│   │   ├── Deepgram VOD    # Pre-recorded content (transcribe_vod_with_deepgram)
+│   │   ├── Deepgram Live   # Live streaming (transcribe_with_deepgram)
+│   │   ├── Whisper/Ivrit   # Batch with elapsed time tracking
+│   │   └── Progress Tracking # Real-time download & transcription status
 │   └── API Endpoints       # WebSocket & REST APIs
+│       ├── /ws/transcribe  # WebSocket transcription endpoint
+│       ├── /health         # Health check endpoint
+│       ├── /api/gpu        # GPU diagnostics endpoint
+│       ├── /api/cache/stats    # Cache statistics
+│       └── /api/cache/clear    # Clear cache
 ├── static/
 │   └── index.html         # Modern web UI with dark theme
 ├── cache/                 # Audio cache directory (gitignored)
@@ -362,9 +383,19 @@ This application can be deployed to:
 - **Render**: Docker-based deployment
 - **Fly.io**: Dockerfile deployment
 
-## 📈 Recent Updates (v1.1)
+## 📈 Recent Updates (v2.0)
 
-### Completed Features
+### ✨ Latest Features (v2.0)
+- ✅ **Real-Time Progress Tracking**: Download progress with %, MB, speed, ETA + transcription elapsed time
+- ✅ **Fully Async Architecture**: Complete async/await implementation with asyncio.create_subprocess_exec
+- ✅ **Enhanced Error Handling**: Detailed error messages with HTTP error detection (410, 403, 404)
+- ✅ **VOD Detection & Optimization**: Automatic detection of Video-on-Demand vs live streams
+- ✅ **Multi-Stage Visual Progress**: Download → Process → Transcribe indicator with status updates
+- ✅ **GPU Diagnostics API**: `/api/gpu` endpoint for CUDA availability and PyTorch info
+- ✅ **Advanced Audio Processing**: Loudnorm filter (-16 LUFS), 44.1kHz stereo output
+- ✅ **Run-in-Executor Pattern**: Non-blocking transcription with periodic status updates
+
+### Previous Features (v1.x)
 - ✅ **yt-dlp Integration**: Download and transcribe from YouTube, Vimeo, TikTok, and other video platforms
 - ✅ **Deepgram Cloud Transcription**: Ultra-fast cloud-based transcription with <100ms latency
 - ✅ **Audio Caching System**: SHA256-based caching for normalized audio chunks (60% CPU reduction)
@@ -376,6 +407,7 @@ This application can be deployed to:
 ### Roadmap
 
 - [ ] Support for local file uploads
+- [ ] Real-time transcription chunk percentage (currently only elapsed time)
 - [ ] Speaker diarization (identify multiple speakers)
 - [ ] Subtitle generation (SRT, VTT formats)
 - [ ] Translation support

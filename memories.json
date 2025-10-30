@@ -1526,7 +1526,49 @@
       "lastAccessed": "2025-10-30T11:31:26.594Z",
       "lastVerified": "2025-10-30T11:31:26.594Z",
       "status": "fresh"
+    },
+    {
+      "id": "mem_1761824220022_kcd341jnm",
+      "content": "UNDOCUMENTED FEATURES IN APP.PY (2159 lines, 22 functions):\n\nNEW FEATURES NOT IN README:\n1. Real-Time Download Progress Tracking (Lines 203-314)\n   - Async download with progress monitoring\n   - Reports: %, MB, speed (MB/s), ETA\n   - WebSocket message type: \"download_progress\"\n   - Uses asyncio.create_subprocess_exec (non-blocking)\n\n2. Transcription Elapsed Time Tracking (Lines 1919-1995)\n   - Monitors OpenAI Whisper and Ivrit transcription\n   - Uses run_in_executor() for non-blocking execution\n   - Reports: elapsed time every 5 seconds\n   - WebSocket message type: \"transcription_status\"\n\n3. Enhanced Error Handling\n   - Detailed FFmpeg error messages\n   - HTTP error detection (410, 403, 404)\n   - Helpful troubleshooting suggestions\n\n4. VOD (Video-on-Demand) Detection\n   - Automatic detection of VOD vs live streams\n   - Uses yt-dlp for video platforms\n   - Uses FFmpeg for direct streams\n   - Optimized batch transcription for VOD\n\n5. Deepgram Nova-3 Support (not Nova-2 as documented)\n   - Environment variable: DEEPGRAM_MODEL=nova-3\n   - Configurable language: DEEPGRAM_LANGUAGE\n   - Time limit: DEEPGRAM_TIME_LIMIT\n   - VOD and streaming modes\n\n6. GPU Diagnostics Endpoint\n   - GET /api/gpu - Checks CUDA availability\n   - Reports PyTorch version, CUDA version\n   - Device information\n\n7. Multiple Transcription Paths\n   - Deepgram VOD (pre-recorded content)\n   - Deepgram streaming (live streams)\n   - Whisper/Ivrit batch (VOD)\n   - Whisper/Ivrit streaming (live)\n\n8. Advanced Audio Processing\n   - Loudnorm filter (-16 LUFS)\n   - 44.1kHz sample rate\n   - Stereo audio\n   - Automatic format conversion\n\n9. Cache System Enhancements\n   - SHA256-based audio caching\n   - Automatic cleanup (24 hours)\n   - Cache statistics endpoint\n   - Clear cache endpoint\n\n10. Health Check Endpoint\n    - GET /health - Application status\n    - Model loading status\n    - API readiness check\n\nFUNCTION CATALOG:\n- lifespan(): App startup/shutdown\n- init_capture_dir(): Initialize temp directories\n- load_model(): Model loader with caching\n- should_use_ytdlp(): URL detection logic\n- download_audio_with_ffmpeg(): Async download with progress\n- download_audio_with_ytdlp(): yt-dlp integration\n- get_audio_duration_seconds(): Audio metadata\n- split_audio_into_chunks(): Audio chunking\n- transcribe_chunk(): Batch transcription\n- init_cache_dir(): Cache initialization\n- generate_cache_key(): SHA256 hashing\n- get_cached_audio(): Cache retrieval\n- save_to_cache(): Cache storage\n- transcribe_audio_stream(): Streaming transcription\n- transcribe_vod_with_deepgram(): Deepgram VOD\n- transcribe_with_deepgram(): Deepgram streaming\n- websocket_transcribe(): Main WebSocket handler\n- health_check(): Health endpoint\n- gpu_diagnostics(): GPU info endpoint\n- cache_stats(): Cache statistics\n- clear_cache(): Cache management\n\nUPDATED DEPENDENCIES:\n- deepgram-sdk >= 3.0 (v3/v4 compatible)\n- torch 2.1.2+cu118 (CUDA 11.8)\n- torchaudio 2.1.2+cu118\n- yt-dlp (latest)\n- fastapi, websockets, uvicorn\n\nDOCKER IMPROVEMENTS:\n- Multi-stage build (base, runtime-prebuilt, runtime-built)\n- CUDA 11.8 support\n- whisper.cpp with GPU acceleration\n- Health checks\n- Volume mounts for model caching",
+      "type": "config",
+      "tags": [
+        "config",
+        "api",
+        "documentation",
+        "features",
+        "undocumented",
+        "app-analysis"
+      ],
+      "timestamp": "2025-10-30T11:37:00.022Z",
+      "context": "Complete analysis of undocumented features in app.py for documentation update",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-30T11:37:00.022Z",
+      "lastVerified": "2025-10-30T11:37:00.022Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1761824458704_3chuy2vzp",
+      "content": "DOCUMENTATION UPDATE COMPLETE:\n\nFILES UPDATED:\n1. README.md - Updated with v2.0 features\n   - Real-time progress tracking section\n   - Enhanced feature descriptions\n   - Updated project structure (2159 lines, 22 functions)\n   - Added new API endpoints documentation\n   - Updated Recent Updates section to v2.0\n\n2. PROJECT_SUMMARY.md - NEW comprehensive documentation\n   - Complete architecture overview\n   - All 22 functions documented with code examples\n   - WebSocket message protocol specification\n   - Docker architecture explanation\n   - Frontend architecture details\n   - Performance optimization strategies\n   - Error handling patterns\n   - Testing guidelines\n   - Deployment checklist\n   - Performance metrics and benchmarks\n\nKEY ADDITIONS DOCUMENTED:\n- Real-time download progress tracking (async implementation)\n- Transcription elapsed time tracking (run_in_executor pattern)\n- Multi-stage progress indicator (Download → Process → Transcribe)\n- Enhanced error handling with HTTP error detection\n- VOD detection and optimization\n- GPU diagnostics endpoint\n- Advanced audio processing details\n- Fully async architecture explanation\n\nUNDOCUMENTED FEATURES NOW DOCUMENTED:\n1. download_audio_with_ffmpeg() - Async with progress monitoring\n2. Transcription elapsed time tracking for Whisper/Ivrit\n3. run_in_executor() pattern for non-blocking transcription\n4. Progress message types (download_progress, transcription_status)\n5. Enhanced error messages with troubleshooting hints\n6. VOD vs Live stream detection logic\n7. Multi-stage Docker build architecture\n8. GPU acceleration with CUDA 11.8\n9. Cache system internals (SHA256, 24h TTL)\n10. All REST API endpoints (/health, /api/gpu, /api/cache/*)\n\nPROJECT SUMMARY INCLUDES:\n- 2159 lines of code analysis\n- 22 functions fully documented\n- Architecture diagrams\n- WebSocket protocol specification\n- Code examples for all major features\n- Performance metrics and RTF calculations\n- Memory usage tables\n- Testing recommendations\n- Deployment guidelines\n- Contributing guidelines\n\nSTATUS: Documentation is now comprehensive and up-to-date with all v2.0 improvements",
+      "type": "error",
+      "tags": [
+        "error",
+        "api",
+        "optimization",
+        "testing",
+        "deployment",
+        "documentation",
+        "complete",
+        "readme",
+        "project-summary",
+        "v2.0"
+      ],
+      "timestamp": "2025-10-30T11:40:58.704Z",
+      "context": "Final documentation update completed for v2.0 release",
+      "accessCount": 0,
+      "lastAccessed": "2025-10-30T11:40:58.704Z",
+      "lastVerified": "2025-10-30T11:40:58.704Z",
+      "status": "fresh"
     }
   ],
-  "lastUpdated": "2025-10-30T11:31:26.594Z"
+  "lastUpdated": "2025-10-30T11:40:58.704Z"
 }

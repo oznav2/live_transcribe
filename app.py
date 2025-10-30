@@ -256,38 +256,54 @@ async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: in
             import time
             start_time = time.time()
             last_update = 0
+            last_file_size = 0
+            estimated_total_size = None
 
-            while process.returncode is None:
-                await asyncio.sleep(0.5)  # Non-blocking sleep
+            # Create monitoring task
+            async def monitor_progress():
+                nonlocal last_update
 
-                # Check if process completed
-                if process.returncode is not None:
-                    break
+                while True:
+                    await asyncio.sleep(0.5)  # Non-blocking sleep
 
-                # Read progress file
-                if os.path.exists(progress_file):
-                    try:
-                        with open(progress_file, 'r') as f:
-                            lines = f.readlines()
-                            progress_data = {}
-                            for line in lines:
-                                if '=' in line:
-                                    key, value = line.strip().split('=', 1)
-                                    progress_data[key] = value
+                    # Check if process completed
+                    if process.returncode is not None:
+                        break
 
-                            # Extract time progress
-                            if 'out_time_ms' in progress_data:
-                                try:
-                                    current_ms = int(progress_data['out_time_ms']) / 1000000  # Convert to seconds
-                                    target_duration = duration if duration > 0 else 60  # Estimate for complete files
-                                    percent = min((current_ms / target_duration) * 100, 99)
+                    # Read progress file
+                    if os.path.exists(progress_file):
+                        try:
+                            with open(progress_file, 'r') as f:
+                                lines = f.readlines()
+                                progress_data = {}
+                                for line in lines:
+                                    if '=' in line:
+                                        key, value = line.strip().split('=', 1)
+                                        progress_data[key] = value
 
-                                    # Calculate download speed
-                                    if os.path.exists(audio_file):
+                                # Extract time progress
+                                if 'out_time_ms' in progress_data and os.path.exists(audio_file):
+                                    try:
+                                        current_seconds = int(progress_data['out_time_ms']) / 1000000  # Convert to seconds
                                         file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
                                         elapsed = time.time() - start_time
+
+                                        # Calculate speed
                                         speed_mbps = file_size_mb / elapsed if elapsed > 0 else 0
-                                        eta_seconds = ((target_duration - current_ms) / current_ms * elapsed) if current_ms > 0 else 0
+
+                                        # For unknown duration (duration=0), estimate from file size growth
+                                        if duration == 0:
+                                            # Estimate total duration based on current time vs file size
+                                            # Show indeterminate progress with file size and speed only
+                                            percent = min((file_size_mb / 200) * 100, 95) if file_size_mb < 200 else 95  # Cap at 95%
+                                            eta_seconds = 0  # Unknown
+                                            target_duration = 0  # Unknown
+                                        else:
+                                            # Known duration - calculate accurate progress
+                                            percent = min((current_seconds / duration) * 100, 99)
+                                            remaining_seconds = duration - current_seconds
+                                            eta_seconds = int((remaining_seconds / current_seconds * elapsed)) if current_seconds > 0 else 0
+                                            target_duration = duration
 
                                         # Send progress update (throttle to every 1 second)
                                         if time.time() - last_update >= 1.0:
@@ -297,20 +313,47 @@ async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: in
                                                     "percent": round(percent, 1),
                                                     "downloaded_mb": round(file_size_mb, 2),
                                                     "speed_mbps": round(speed_mbps, 2),
-                                                    "eta_seconds": int(eta_seconds),
-                                                    "current_time": round(current_ms, 1),
+                                                    "eta_seconds": eta_seconds,
+                                                    "current_time": round(current_seconds, 1),
                                                     "target_duration": target_duration
                                                 })
                                                 last_update = time.time()
                                             except Exception as e:
                                                 logger.debug(f"Progress update failed: {e}")
-                                except (ValueError, ZeroDivisionError) as e:
-                                    logger.debug(f"Progress parsing error: {e}")
-                    except Exception as e:
-                        logger.debug(f"Progress file read error: {e}")
+                                    except (ValueError, ZeroDivisionError) as e:
+                                        logger.debug(f"Progress parsing error: {e}")
+                        except Exception as e:
+                            logger.debug(f"Progress file read error: {e}")
 
-        # Wait for process to complete
-        stdout_output, stderr_output = await process.communicate()
+            # Start monitoring task
+            monitor_task = asyncio.create_task(monitor_progress())
+
+            # Wait for process to complete
+            stdout_output, stderr_output = await process.communicate()
+
+            # Cancel monitoring task
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+
+            # Send 100% complete
+            if os.path.exists(audio_file):
+                file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+                await websocket.send_json({
+                    "type": "download_progress",
+                    "percent": 100,
+                    "downloaded_mb": round(file_size_mb, 2),
+                    "speed_mbps": 0,
+                    "eta_seconds": 0,
+                    "current_time": 0,
+                    "target_duration": 0
+                })
+        else:
+            # No websocket, just wait for completion
+            stdout_output, stderr_output = await process.communicate()
+
         result = process
 
         # Clean up progress file
@@ -1991,7 +2034,26 @@ async def websocket_transcribe(websocket: WebSocket):
                         await websocket.send_json({"error": f"Transcription failed: {result.stderr[:200]}"})
                         return
 
-                    transcript = result.stdout.strip()
+                    # Clean whisper.cpp output (remove progress lines and debug info)
+                    raw_output = result.stdout.strip()
+                    logger.info(f"Raw whisper.cpp output length: {len(raw_output)} characters")
+
+                    # Split by lines and filter out non-transcript lines
+                    lines = [line.strip() for line in raw_output.split('\n') if line.strip()]
+                    transcript_lines = [
+                        line for line in lines
+                        if not line.startswith('[')  # Remove timestamp lines
+                        and '%]' not in line  # Remove progress lines
+                        and not line.startswith('whisper_')  # Remove debug lines
+                        and not line.startswith('ggml_')  # Remove GGML debug lines
+                        and 'load time' not in line.lower()  # Remove timing info
+                        and 'sample time' not in line.lower()
+                        and 'encode time' not in line.lower()
+                        and 'decode time' not in line.lower()
+                    ]
+                    transcript = ' '.join(transcript_lines)
+                    logger.info(f"Cleaned transcript length: {len(transcript)} characters")
+                    logger.info(f"First 200 chars: {transcript[:200]}")
                     detected_language = language or 'he'
 
                 # Send complete transcript
