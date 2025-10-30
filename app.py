@@ -103,6 +103,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Log dependency availability at startup
+logger.info("=" * 60)
+logger.info("Dependency Status:")
+logger.info(f"  OpenAI Whisper: {'✓ Available' if OPENAI_WHISPER_AVAILABLE else '✗ Not Available'}")
+logger.info(f"  Faster Whisper: {'✓ Available' if FASTER_WHISPER_AVAILABLE else '✗ Not Available'}")
+logger.info(f"  Ivrit Package: {'✓ Available' if IVRIT_PACKAGE_AVAILABLE else '✗ Not Available'}")
+logger.info(f"  Whisper.cpp: {'✓ Available' if WHISPER_CPP_AVAILABLE else '✗ Not Available'}")
+logger.info(f"  Deepgram SDK: {'✓ Available' if DEEPGRAM_AVAILABLE else '✗ Not Available'}")
+logger.info(f"  CUDA: {'✓ Available' if torch.cuda.is_available() else '✗ Not Available'}")
+logger.info("=" * 60)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup and shutdown"""
@@ -139,7 +150,23 @@ app = FastAPI(title="Live Transcription Service", version="1.0.0", lifespan=life
 whisper_models = {}
 current_model = None
 current_model_name = None
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "ivrit-large-v3-turbo")  # Default to Ivrit Hebrew model
+# Determine default model based on available dependencies
+default_model = os.getenv("WHISPER_MODEL")
+if not default_model:
+    # Auto-select based on what's available
+    if FASTER_WHISPER_AVAILABLE:
+        default_model = "ivrit-ct2"  # Use Ivrit CT2 model if faster_whisper is available
+    elif WHISPER_CPP_AVAILABLE:
+        default_model = "ivrit-large-v3-turbo"  # Use GGML model if whisper.cpp is available
+    elif OPENAI_WHISPER_AVAILABLE:
+        default_model = "large"  # Fallback to OpenAI Whisper
+    elif DEEPGRAM_AVAILABLE and DEEPGRAM_API_KEY:
+        default_model = "deepgram"  # Use Deepgram if available
+    else:
+        default_model = "ivrit-ct2"  # Default to ivrit-ct2 and let it fail with clear message
+
+MODEL_SIZE = default_model
+logger.info(f"Default model selected: {MODEL_SIZE}")
 
 # Model configurations
 MODEL_CONFIGS = {
@@ -1319,8 +1346,14 @@ def transcribe_chunk(model_config: dict, model, chunk_path: str, language: Optio
             if not FASTER_WHISPER_AVAILABLE:
                 raise ValueError("faster_whisper is not installed. Cannot transcribe with faster_whisper models.")
             
+            # Handle wrapped faster_whisper model structure
+            if isinstance(model, dict) and model.get("type") == "faster_whisper":
+                actual_model = model["model"]
+            else:
+                actual_model = model
+            
             # Use faster_whisper model for transcription
-            segments, info = model.transcribe(chunk_path, language=language)
+            segments, info = actual_model.transcribe(chunk_path, language=language)
             transcription_text = ' '.join([segment.text for segment in segments]).strip()
             detected_language = info.language if hasattr(info, 'language') else (language or 'unknown')
     except Exception as e:
@@ -1611,6 +1644,35 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                             )
                         transcription_text = result.get('text', '').strip()
                         detected_language = result.get('language', 'unknown')
+                    elif model_config["type"] == "faster_whisper":
+                        # Use faster_whisper for transcription
+                        # Handle wrapped model structure
+                        if isinstance(model, dict) and model.get("type") == "faster_whisper":
+                            fw_model = model["model"]
+                        else:
+                            fw_model = model
+                        
+                        try:
+                            segments, info = fw_model.transcribe(
+                                temp_path,
+                                language=processor.language or "he",
+                                beam_size=int(os.getenv("IVRIT_BEAM_SIZE", "5")),
+                                best_of=5,
+                                patience=1,
+                                temperature=0,
+                                compression_ratio_threshold=2.4,
+                                no_speech_threshold=0.6,
+                                word_timestamps=False
+                            )
+                            text_parts = []
+                            for segment in segments:
+                                text_parts.append(segment.text)
+                            transcription_text = ' '.join(text_parts).strip()
+                            detected_language = info.language if hasattr(info, 'language') else (processor.language or 'he')
+                        except Exception as e:
+                            logger.error(f"faster_whisper transcription failed: {e}")
+                            transcription_text = ""
+                            detected_language = processor.language or 'he'
                     elif model_config["type"] == "ggml":
                         # Use whisper.cpp CLI - output text directly instead of JSON
                         # The -oj flag has issues with mixed output, so we use plain text output

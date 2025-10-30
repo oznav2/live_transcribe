@@ -10,6 +10,11 @@ ivrit[all]==0.1.8
 # Faster Whisper for efficient transcription
 faster-whisper>=1.1.1
 
+# OpenAI Whisper (optional, for fallback support)
+# Note: Commented out by default to avoid conflicts with faster-whisper
+# Uncomment if you need OpenAI Whisper models
+# openai-whisper==20231117
+
 # PyTorch and audio (compatible versions)
 torch==2.4.1
 torchaudio==2.4.1
