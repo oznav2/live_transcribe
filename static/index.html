@@ -917,12 +917,27 @@
             const panel = document.getElementById('transcriptionProgress');
             panel.classList.add('active');
 
-            document.getElementById('transcriptionPercent').textContent = `${data.percent}%`;
-            document.getElementById('transcriptionProgressBar').style.width = `${data.percent}%`;
+            // Update percentage
+            const percent = data.percent || data.percentage || 0;
+            document.getElementById('transcriptionPercent').textContent = `${percent.toFixed(1)}%`;
+            document.getElementById('transcriptionProgressBar').style.width = `${percent}%`;
             document.getElementById('transcriptionProgressBar').classList.remove('indeterminate');
-            document.getElementById('transcriptionChunks').textContent =
-                `${data.chunks_processed} / ${data.chunks_total}`;
-            document.getElementById('transcriptionETA').textContent = formatTime(data.eta_seconds);
+            
+            // Update chunks or duration info
+            if (data.chunks_processed !== undefined && data.total_chunks !== undefined) {
+                document.getElementById('transcriptionChunks').textContent =
+                    `Chunk ${data.chunks_processed} / ${data.total_chunks}`;
+            } else if (data.audio_duration !== undefined) {
+                const duration = formatTime(Math.floor(data.audio_duration));
+                const speed = data.speed ? ` (${data.speed}x)` : '';
+                document.getElementById('transcriptionChunks').textContent = `Duration: ${duration}${speed}`;
+            } else if (data.chunks_processed !== undefined) {
+                document.getElementById('transcriptionChunks').textContent =
+                    `${data.chunks_processed} / ${data.chunks_total || '?'}`;
+            }
+            
+            // Update ETA
+            document.getElementById('transcriptionETA').textContent = formatTime(data.eta_seconds || 0);
 
             // Update stage indicator
             showStageIndicator();
@@ -1028,10 +1043,37 @@
                     // Handle download progress updates
                     updateDownloadProgress(data);
                     updateStatus('active', `Downloading: ${data.percent}% (${formatTime(data.eta_seconds)} remaining)`);
+                } else if (data.type === 'transcription_chunk') {
+                    // Handle incremental transcription chunks
+                    addTranscription(data.text);
+                    
+                    // Update progress if provided
+                    if (data.chunk_index !== undefined && data.total_chunks !== undefined) {
+                        const percent = ((data.chunk_index + 1) / data.total_chunks * 100).toFixed(1);
+                        updateStatus('active', `Transcribing: Chunk ${data.chunk_index + 1}/${data.total_chunks} (${percent}%)`);
+                    }
+                    
+                    // Show progress panels if not visible
+                    if (!document.getElementById('transcriptionProgress').classList.contains('active')) {
+                        showStageIndicator();
+                        updateStage(1, 'completed');
+                        updateStage(2, 'completed');
+                        updateStage(3, 'active');
+                    }
                 } else if (data.type === 'transcription_progress') {
-                    // Handle transcription progress updates (with real %)
-                    updateTranscriptionProgress(data);
-                    updateStatus('active', `Transcribing: ${data.percent}% (${formatTime(data.eta_seconds)} remaining)`);
+                    // Handle detailed transcription progress with percentage and ETA
+                    if (data.percentage !== undefined && data.eta_seconds !== undefined) {
+                        const statusMsg = `Transcribing: ${data.percentage.toFixed(1)}% (ETA: ${formatTime(data.eta_seconds)})`;
+                        updateStatus('active', statusMsg);
+                        
+                        // Update progress bar if we have one
+                        updateTranscriptionProgress({
+                            percent: data.percentage,
+                            audio_duration: data.audio_duration,
+                            elapsed_seconds: data.elapsed_seconds,
+                            speed: data.speed || 1.0
+                        });
+                    }
                 } else if (data.type === 'transcription_status') {
                     // Handle transcription status updates (indeterminate with elapsed time)
                     updateTranscriptionStatus(data);

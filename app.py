@@ -289,9 +289,32 @@ def should_use_ytdlp(url: str) -> bool:
     # Use yt-dlp for known video platforms and complex URLs
     ytdlp_patterns = [
         'youtube.com', 'youtu.be', 'vimeo.com', 'dailymotion.com',
-        'facebook.com', 'twitter.com', 'twitch.tv', 'tiktok.com'
+        'facebook.com', 'twitter.com', 'twitch.tv', 'tiktok.com',
+        'instagram.com', 'reddit.com'
     ]
-    return any(pattern in url.lower() for pattern in ytdlp_patterns)
+    
+    # Special handling for YouTube URLs with various formats
+    youtube_patterns = [
+        r'youtube\.com/watch\?v=',
+        r'youtu\.be/',
+        r'youtube\.com/embed/',
+        r'youtube\.com/v/',
+        r'm\.youtube\.com'
+    ]
+    
+    url_lower = url.lower()
+    
+    # Check standard patterns
+    if any(pattern in url_lower for pattern in ytdlp_patterns):
+        return True
+    
+    # Check YouTube regex patterns
+    import re
+    for pattern in youtube_patterns:
+        if re.search(pattern, url_lower):
+            return True
+    
+    return False
 
 
 async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: int = 60, websocket = None, use_cache: bool = True) -> Optional[str]:
@@ -664,6 +687,101 @@ def get_audio_duration_seconds(audio_path: str) -> Optional[float]:
         return None
 
 
+def calculate_progress_metrics(audio_duration: float, elapsed_time: float, processed_chunks: int = 0, total_chunks: int = 0) -> dict:
+    """
+    Calculate detailed progress metrics for transcription.
+    
+    Args:
+        audio_duration: Total audio duration in seconds
+        elapsed_time: Time elapsed since start in seconds
+        processed_chunks: Number of chunks processed (for chunked processing)
+        total_chunks: Total number of chunks (for chunked processing)
+    
+    Returns:
+        Dictionary with percentage, ETA, speed, and other metrics
+    """
+    if total_chunks > 0 and processed_chunks > 0:
+        # Chunk-based progress
+        percentage = (processed_chunks / total_chunks) * 100
+        avg_chunk_time = elapsed_time / processed_chunks
+        remaining_chunks = total_chunks - processed_chunks
+        eta = remaining_chunks * avg_chunk_time
+        
+        # Calculate processing speed
+        processed_duration = (processed_chunks / total_chunks) * audio_duration
+        speed = processed_duration / elapsed_time if elapsed_time > 0 else 0
+    else:
+        # Time-based estimation (fallback)
+        # Use conservative estimate of processing speed
+        if elapsed_time < 5:
+            # Not enough data, use very conservative estimate
+            estimated_speed = 0.3  # 0.3x realtime
+        else:
+            # Adaptive estimation based on model typical performance
+            estimated_speed = 0.5  # 0.5x realtime as default
+        
+        processed_duration = min(elapsed_time * estimated_speed, audio_duration * 0.95)
+        percentage = min((processed_duration / audio_duration) * 100, 95)
+        remaining_duration = audio_duration - processed_duration
+        eta = remaining_duration / estimated_speed if estimated_speed > 0 else 0
+        speed = estimated_speed
+    
+    return {
+        "percentage": round(min(percentage, 99.9), 1),
+        "eta_seconds": max(int(eta), 0),
+        "speed": round(speed, 2),
+        "processed_duration": round(processed_duration, 1) if 'processed_duration' in locals() else 0,
+        "audio_duration": round(audio_duration, 1)
+    }
+
+
+def split_audio_for_incremental(audio_path: str, chunk_seconds: int = 60, overlap_seconds: int = 5) -> Tuple[str, List[str]]:
+    """
+    Split audio file into chunks for incremental transcription.
+    Returns tuple of (temp_dir, list of chunk file paths)
+    """
+    duration = get_audio_duration_seconds(audio_path)
+    if not duration:
+        raise RuntimeError("Unable to determine audio duration for chunking")
+    
+    temp_dir = tempfile.mkdtemp(prefix='incremental_chunks_')
+    chunks = []
+    
+    # Calculate chunk positions
+    step = max(1, chunk_seconds - overlap_seconds)
+    position = 0
+    index = 0
+    
+    while position < duration:
+        chunk_path = os.path.join(temp_dir, f"chunk_{index:04d}.wav")
+        actual_chunk_duration = min(chunk_seconds, duration - position)
+        
+        # Extract chunk using ffmpeg
+        cmd = [
+            'ffmpeg',
+            '-ss', str(position),
+            '-i', audio_path,
+            '-t', str(actual_chunk_duration),
+            '-ar', '16000',
+            '-ac', '1',
+            '-c:a', 'pcm_s16le',
+            '-loglevel', 'error',
+            '-y',
+            chunk_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0 and os.path.exists(chunk_path):
+            chunks.append(chunk_path)
+            index += 1
+            position += step
+        else:
+            logger.error(f"Failed to create chunk at position {position}s: {result.stderr}")
+            break
+    
+    return temp_dir, chunks
+
+
 def split_audio_into_chunks(audio_path: str, chunk_seconds: int, overlap_seconds: int) -> Tuple[str, List[Tuple[int, str]]]:
     """
     Split the given audio file into chunked WAV files suitable for Whisper.
@@ -710,6 +828,258 @@ def split_audio_into_chunks(audio_path: str, chunk_seconds: int, overlap_seconds
         raise RuntimeError("No chunks were created from audio file")
 
     return temp_dir, chunks
+
+
+async def transcribe_with_incremental_output(
+    model, model_config: dict, audio_file: str, language: Optional[str], 
+    websocket: WebSocket, chunk_seconds: int = 60
+) -> Tuple[str, str]:
+    """
+    Transcribe audio with incremental output and detailed progress.
+    Returns (full_transcript, detected_language)
+    """
+    import time
+    start_time = time.time()
+    
+    # Get audio duration for progress calculation
+    audio_duration = get_audio_duration_seconds(audio_file)
+    if not audio_duration:
+        logger.warning("Could not determine audio duration, using fallback progress")
+        audio_duration = 0
+    
+    # Send initial status with audio duration
+    await websocket.send_json({
+        "type": "transcription_status",
+        "message": f"Starting transcription of {audio_duration:.1f}s audio...",
+        "audio_duration": audio_duration,
+        "elapsed_seconds": 0
+    })
+    
+    # For short audio (< 2 minutes), process as single chunk
+    if audio_duration and audio_duration < 120:
+        logger.info(f"Short audio ({audio_duration}s), processing as single chunk")
+        
+        # Transcribe entire file
+        if model_config["type"] == "openai":
+            def run_transcription():
+                use_fp16 = torch.cuda.is_available()
+                try:
+                    return model.transcribe(audio_file, language=language, fp16=use_fp16, verbose=False)
+                except Exception as e:
+                    logger.warning(f"GPU/FP16 failed: {e}. Retrying with fp16=False.")
+                    return model.transcribe(audio_file, language=language, fp16=False, verbose=False)
+            
+            # Run with progress monitoring
+            loop = asyncio.get_event_loop()
+            task = loop.run_in_executor(None, run_transcription)
+            
+            while not task.done():
+                await asyncio.sleep(2)
+                elapsed = time.time() - start_time
+                metrics = calculate_progress_metrics(audio_duration, elapsed)
+                
+                await websocket.send_json({
+                    "type": "transcription_progress",
+                    "audio_duration": audio_duration,
+                    "percentage": metrics["percentage"],
+                    "eta_seconds": metrics["eta_seconds"],
+                    "speed": metrics["speed"],
+                    "elapsed_seconds": int(elapsed)
+                })
+            
+            result = await task
+            transcript = result.get('text', '').strip()
+            detected_language = result.get('language', language or 'unknown')
+            
+            # Send final transcript
+            if transcript:
+                await websocket.send_json({
+                    "type": "transcription_chunk",
+                    "text": transcript,
+                    "chunk_index": 0,
+                    "total_chunks": 1,
+                    "is_final": True
+                })
+            
+            return transcript, detected_language
+        
+        elif model_config["type"] == "ggml":
+            # Similar for whisper.cpp
+            cmd = [
+                model["whisper_cpp_path"],
+                "-m", model["path"],
+                "-f", audio_file,
+                "-nt", "-t", "4", "-bs", "1",
+                "--no-prints"
+            ]
+            if language:
+                cmd.extend(["-l", language])
+            
+            def run_whisper_cpp():
+                return subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            
+            loop = asyncio.get_event_loop()
+            task = loop.run_in_executor(None, run_whisper_cpp)
+            
+            while not task.done():
+                await asyncio.sleep(2)
+                elapsed = time.time() - start_time
+                metrics = calculate_progress_metrics(audio_duration, elapsed)
+                
+                await websocket.send_json({
+                    "type": "transcription_progress",
+                    "audio_duration": audio_duration,
+                    "percentage": metrics["percentage"],
+                    "eta_seconds": metrics["eta_seconds"],
+                    "speed": metrics["speed"],
+                    "elapsed_seconds": int(elapsed)
+                })
+            
+            result = await task
+            
+            if result.returncode == 0:
+                transcript = result.stdout.strip()
+                # Clean output
+                lines = [l.strip() for l in transcript.split('\n') if l.strip()]
+                content_lines = [
+                    l for l in lines
+                    if not l.startswith('[') and '%]' not in l and not l.startswith('whisper_')
+                ]
+                transcript = ' '.join(content_lines)
+            else:
+                transcript = ""
+            
+            detected_language = language or 'he'
+            
+            if transcript:
+                await websocket.send_json({
+                    "type": "transcription_chunk",
+                    "text": transcript,
+                    "chunk_index": 0,
+                    "total_chunks": 1,
+                    "is_final": True
+                })
+            
+            return transcript, detected_language
+    
+    # For longer audio, use chunked processing for incremental output
+    logger.info(f"Long audio ({audio_duration}s), using chunked processing")
+    
+    try:
+        # Split audio into chunks
+        temp_dir, chunk_files = split_audio_for_incremental(audio_file, chunk_seconds, overlap_seconds=5)
+        total_chunks = len(chunk_files)
+        
+        logger.info(f"Split audio into {total_chunks} chunks")
+        
+        transcripts = []
+        detected_language = language or 'unknown'
+        
+        for i, chunk_file in enumerate(chunk_files):
+            chunk_start = time.time()
+            
+            # Transcribe chunk
+            if model_config["type"] == "openai":
+                use_fp16 = torch.cuda.is_available()
+                try:
+                    result = model.transcribe(chunk_file, language=language, fp16=use_fp16, verbose=False)
+                except Exception:
+                    result = model.transcribe(chunk_file, language=language, fp16=False, verbose=False)
+                
+                chunk_text = result.get('text', '').strip()
+                if i == 0 and result.get('language'):
+                    detected_language = result.get('language')
+            
+            elif model_config["type"] == "ggml":
+                cmd = [
+                    model["whisper_cpp_path"],
+                    "-m", model["path"],
+                    "-f", chunk_file,
+                    "-nt", "-t", "4", "-bs", "1",
+                    "--no-prints"
+                ]
+                if language:
+                    cmd.extend(["-l", language])
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                
+                if result.returncode == 0:
+                    output = result.stdout.strip()
+                    lines = [l.strip() for l in output.split('\n') if l.strip()]
+                    content_lines = [
+                        l for l in lines
+                        if not l.startswith('[') and '%]' not in l and not l.startswith('whisper_')
+                    ]
+                    chunk_text = ' '.join(content_lines)
+                else:
+                    chunk_text = ""
+            
+            # Send incremental result
+            if chunk_text:
+                await websocket.send_json({
+                    "type": "transcription_chunk",
+                    "text": chunk_text,
+                    "chunk_index": i,
+                    "total_chunks": total_chunks,
+                    "is_final": i == total_chunks - 1
+                })
+                transcripts.append(chunk_text)
+            
+            # Send progress update
+            elapsed = time.time() - start_time
+            metrics = calculate_progress_metrics(audio_duration, elapsed, i + 1, total_chunks)
+            
+            await websocket.send_json({
+                "type": "transcription_progress",
+                "audio_duration": audio_duration,
+                "percentage": metrics["percentage"],
+                "eta_seconds": metrics["eta_seconds"],
+                "speed": metrics["speed"],
+                "elapsed_seconds": int(elapsed),
+                "chunks_processed": i + 1,
+                "total_chunks": total_chunks
+            })
+            
+            logger.info(f"Processed chunk {i+1}/{total_chunks} in {time.time()-chunk_start:.1f}s")
+        
+        # Cleanup chunk files
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
+        
+        # Join transcripts with space
+        full_transcript = ' '.join(transcripts)
+        return full_transcript, detected_language
+        
+    except Exception as e:
+        logger.error(f"Incremental transcription error: {e}")
+        # Fallback to single-file transcription
+        logger.info("Falling back to single-file transcription")
+        
+        if model_config["type"] == "openai":
+            use_fp16 = torch.cuda.is_available()
+            try:
+                result = model.transcribe(audio_file, language=language, fp16=use_fp16, verbose=False)
+            except Exception:
+                result = model.transcribe(audio_file, language=language, fp16=False, verbose=False)
+            
+            transcript = result.get('text', '').strip()
+            detected_language = result.get('language', language or 'unknown')
+        else:
+            transcript = ""
+            detected_language = language or 'unknown'
+        
+        if transcript:
+            await websocket.send_json({
+                "type": "transcription_chunk",
+                "text": transcript,
+                "chunk_index": 0,
+                "total_chunks": 1,
+                "is_final": True
+            })
+        
+        return transcript, detected_language
 
 
 def transcribe_chunk(model_config: dict, model, chunk_path: str, language: Optional[str]) -> Tuple[int, str, str]:
@@ -1996,114 +2366,19 @@ async def websocket_transcribe(websocket: WebSocket):
 
                 return
 
-            # Transcribe the downloaded file directly (default path) WITH PROGRESS UPDATES
+            # Transcribe the downloaded file with incremental output and detailed progress
             await websocket.send_json({"type": "status", "message": "Transcribing downloaded audio..."})
 
             try:
                 model = load_model(model_name)
                 model_config = MODEL_CONFIGS[model_name]
                 
-                import time
-                start_time = time.time()
+                # Use the new incremental transcription function
+                transcription_text, detected_language = await transcribe_with_incremental_output(
+                    model, model_config, audio_file, language, websocket
+                )
 
-                if model_config["type"] == "openai":
-                    # Send initial status
-                    await websocket.send_json({"type": "transcription_status", "message": "Starting transcription with OpenAI Whisper...", "elapsed_seconds": 0})
-                    
-                    def run_whisper_transcription():
-                        use_fp16 = torch.cuda.is_available()
-                        try:
-                            return model.transcribe(audio_file, language=language, fp16=use_fp16, verbose=False)
-                        except Exception as e:
-                            logger.warning(f"GPU/FP16 ytdlp transcribe failed: {e}. Retrying with fp16=False.")
-                            return model.transcribe(audio_file, language=language, fp16=False, verbose=False)
-                    
-                    # Run in background thread and monitor progress
-                    loop = asyncio.get_event_loop()
-                    transcription_task = loop.run_in_executor(None, run_whisper_transcription)
-                    
-                    # Send periodic status updates while transcribing
-                    while not transcription_task.done():
-                        await asyncio.sleep(5)
-                        elapsed = int(time.time() - start_time)
-                        mins = elapsed // 60
-                        secs = elapsed % 60
-                        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
-                        await websocket.send_json({
-                            "type": "transcription_status",
-                            "message": f"Transcribing... ({time_str} elapsed)",
-                            "elapsed_seconds": elapsed
-                        })
-                    
-                    result = await transcription_task
-                    transcription_text = result.get('text', '').strip()
-                    detected_language = result.get('language', 'unknown')
-                    
-                elif model_config["type"] == "ggml":
-                    # Send initial status
-                    await websocket.send_json({"type": "transcription_status", "message": "Starting transcription with Ivrit model...", "elapsed_seconds": 0})
-                    
-                    # Use whisper.cpp CLI - output text directly instead of JSON
-                    cmd = [
-                        model["whisper_cpp_path"],
-                        "-m", model["path"],
-                        "-f", audio_file,
-                        "-nt",  # No timestamps in output (plain text)
-                        "-t", "4",  # Use 4 threads for faster processing
-                        "-bs", "1",  # Beam size 1 (greedy decoding - FASTEST)
-                        "--no-prints"
-                    ]
-                    if language:
-                        cmd.extend(["-l", language])
-                    
-                    def run_whisper_cpp():
-                        return subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-                    
-                    # Run in background thread and monitor progress
-                    loop = asyncio.get_event_loop()
-                    transcription_task = loop.run_in_executor(None, run_whisper_cpp)
-                    
-                    # Send periodic status updates while transcribing
-                    while not transcription_task.done():
-                        await asyncio.sleep(5)
-                        elapsed = int(time.time() - start_time)
-                        mins = elapsed // 60
-                        secs = elapsed % 60
-                        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
-                        await websocket.send_json({
-                            "type": "transcription_status",
-                            "message": f"Transcribing... ({time_str} elapsed)",
-                            "elapsed_seconds": elapsed
-                        })
-                    
-                    result = await transcription_task
-                    
-                    if result.returncode == 0:
-                        # whisper.cpp outputs text directly to stdout
-                        transcription_text = result.stdout.strip()
-
-                        # Remove any debug/status lines
-                        lines = [line.strip() for line in transcription_text.split('\n') if line.strip()]
-                        content_lines = [
-                            line for line in lines
-                            if not line.startswith('[')
-                            and not '%]' in line
-                            and not line.startswith('whisper_')
-                        ]
-                        transcription_text = ' '.join(content_lines)
-                        logger.debug(f"yt-dlp transcription: '{transcription_text[:100]}...'")
-                    else:
-                        logger.error(f"whisper.cpp error: {result.stderr}")
-                        transcription_text = ""
-                    detected_language = language or 'he'  # Default to Hebrew for Ivrit model
-
-                if transcription_text:
-                    await websocket.send_json({
-                        "type": "transcription",
-                        "text": transcription_text,
-                        "language": detected_language
-                    })
-
+                # Send complete message
                 await websocket.send_json({"type": "complete", "message": "Transcription complete"})
 
             finally:
@@ -2140,118 +2415,17 @@ async def websocket_transcribe(websocket: WebSocket):
                 file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
                 await websocket.send_json({"type": "status", "message": f"✅ Downloaded {file_size_mb:.1f} MB. Starting batch transcription..."})
 
-                # Batch transcribe the complete file with elapsed time tracking
+                # Batch transcribe with incremental output and detailed progress
                 model = load_model(model_name)
                 model_config = MODEL_CONFIGS[model_name]
 
-                import time
-                start_time = time.time()
+                # Use the new incremental transcription function for better UX
+                transcript, detected_language = await transcribe_with_incremental_output(
+                    model, model_config, audio_file, language, websocket, chunk_seconds=60
+                )
 
-                if model_config["type"] == "openai":
-                    # OpenAI Whisper - run in executor to avoid blocking
-                    await websocket.send_json({"type": "transcription_status", "message": "Starting transcription with OpenAI Whisper...", "elapsed_seconds": 0})
-
-                    def run_whisper_transcription():
-                        use_fp16 = torch.cuda.is_available()
-                        try:
-                            return model.transcribe(audio_file, language=language, fp16=use_fp16, verbose=False)
-                        except Exception as e:
-                            logger.warning(f"GPU/FP16 transcribe failed: {e}. Retrying with fp16=False.")
-                            return model.transcribe(audio_file, language=language, fp16=False, verbose=False)
-
-                    # Run in background thread and monitor
-                    loop = asyncio.get_event_loop()
-                    transcription_task = loop.run_in_executor(None, run_whisper_transcription)
-
-                    # Send periodic status updates while transcribing
-                    while not transcription_task.done():
-                        await asyncio.sleep(5)
-                        elapsed = int(time.time() - start_time)
-                        mins = elapsed // 60
-                        secs = elapsed % 60
-                        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
-                        await websocket.send_json({
-                            "type": "transcription_status",
-                            "message": f"Transcribing... ({time_str} elapsed)",
-                            "elapsed_seconds": elapsed
-                        })
-
-                    result = await transcription_task
-                    transcript = result.get('text', '').strip()
-                    detected_language = result.get('language', language or 'unknown')
-
-                elif model_config["type"] == "ggml":
-                    # whisper.cpp (Ivrit model) - run in executor to avoid blocking
-                    await websocket.send_json({"type": "transcription_status", "message": "Starting transcription with Ivrit model...", "elapsed_seconds": 0})
-
-                    whisper_bin = os.getenv("WHISPER_CPP_PATH", "whisper.cpp/build/bin/whisper-cli")
-                    model_path = model_config["path"]
-                    cmd = [whisper_bin, '-m', model_path, '-f', audio_file, '-l', language or 'auto', '-nt']
-
-                    def run_whisper_cpp():
-                        return subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-
-                    # Run in background thread and monitor
-                    loop = asyncio.get_event_loop()
-                    transcription_task = loop.run_in_executor(None, run_whisper_cpp)
-
-                    # Send periodic status updates while transcribing
-                    while not transcription_task.done():
-                        await asyncio.sleep(5)
-                        elapsed = int(time.time() - start_time)
-                        mins = elapsed // 60
-                        secs = elapsed % 60
-                        time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
-                        await websocket.send_json({
-                            "type": "transcription_status",
-                            "message": f"Transcribing... ({time_str} elapsed)",
-                            "elapsed_seconds": elapsed
-                        })
-
-                    result = await transcription_task
-
-                    if result.returncode != 0:
-                        logger.error(f"whisper.cpp failed: {result.stderr}")
-                        await websocket.send_json({"error": f"Transcription failed: {result.stderr[:200]}"})
-                        return
-
-                    # Clean whisper.cpp output (remove progress lines and debug info)
-                    raw_output = result.stdout.strip()
-                    logger.info(f"Raw whisper.cpp output length: {len(raw_output)} characters")
-
-                    # Split by lines and filter out non-transcript lines
-                    lines = [line.strip() for line in raw_output.split('\n') if line.strip()]
-                    transcript_lines = [
-                        line for line in lines
-                        if not line.startswith('[')  # Remove timestamp lines
-                        and '%]' not in line  # Remove progress lines
-                        and not line.startswith('whisper_')  # Remove debug lines
-                        and not line.startswith('ggml_')  # Remove GGML debug lines
-                        and 'load time' not in line.lower()  # Remove timing info
-                        and 'sample time' not in line.lower()
-                        and 'encode time' not in line.lower()
-                        and 'decode time' not in line.lower()
-                    ]
-                    transcript = ' '.join(transcript_lines)
-                    logger.info(f"Cleaned transcript length: {len(transcript)} characters")
-                    logger.info(f"First 200 chars: {transcript[:200]}")
-                    detected_language = language or 'he'
-
-                # Send complete transcript
+                # Send completion message
                 if transcript:
-                    await websocket.send_json({"type": "status", "message": f"📝 Transcription complete! Sending {len(transcript)} characters..."})
-
-                    # Send in chunks for large transcripts
-                    chunk_size = 500
-                    for i in range(0, len(transcript), chunk_size):
-                        chunk = transcript[i:i + chunk_size]
-                        await websocket.send_json({
-                            "type": "transcription",
-                            "text": chunk,
-                            "language": detected_language
-                        })
-                        await asyncio.sleep(0.05)
-
                     await websocket.send_json({"type": "complete", "message": "Transcription complete"})
                 else:
                     await websocket.send_json({"type": "status", "message": "⚠️ No speech detected in audio file"})
