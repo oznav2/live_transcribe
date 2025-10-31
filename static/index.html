@@ -265,6 +265,14 @@
             font-size: 13px;
             line-height: 1.8;
             color: #e0e0e0;
+            direction: ltr; /* Default left-to-right */
+            text-align: left;
+        }
+
+        .transcription-area.rtl {
+            direction: rtl; /* Right-to-left for Hebrew */
+            text-align: right;
+            font-family: 'Arial', 'Helvetica', sans-serif; /* Better Hebrew font support */
         }
 
         .transcription-area::-webkit-scrollbar {
@@ -852,6 +860,53 @@
             wordCount.textContent = `${words} word${words !== 1 ? 's' : ''}`;
         }
 
+        function isHebrewText(text) {
+            // Check if text contains Hebrew characters
+            const hebrewRegex = /[\u0590-\u05FF]/;
+            return hebrewRegex.test(text);
+        }
+
+        function isHebrewModel(modelName) {
+            // Check if model is Hebrew-specific
+            return modelName && modelName.toLowerCase().includes('ivrit');
+        }
+
+        function isHebrewLanguage(language) {
+            // Check if language is Hebrew
+            return language === 'he' || language === 'hebrew';
+        }
+
+        function shouldUseRTL(modelName, language, text) {
+            // Determine if RTL should be used based on:
+            // 1. Model selection (ivrit models)
+            // 2. Language selection (Hebrew)
+            // 3. Text content (contains Hebrew characters)
+            
+            if (isHebrewModel(modelName)) {
+                return true; // Ivrit models always use RTL
+            }
+            
+            if (isHebrewLanguage(language)) {
+                return true; // Hebrew language selected
+            }
+            
+            if (text && isHebrewText(text)) {
+                return true; // Text contains Hebrew
+            }
+            
+            return false; // Default to LTR
+        }
+
+        function setTranscriptionDirection(useRTL) {
+            if (useRTL) {
+                transcriptionBox.classList.add('rtl');
+                console.log('Switched to RTL (Hebrew) mode');
+            } else {
+                transcriptionBox.classList.remove('rtl');
+                console.log('Switched to LTR (default) mode');
+            }
+        }
+
         function addTranscription(text) {
             if (!text.trim()) return;
 
@@ -869,6 +924,13 @@
             transcriptionBox.scrollTop = transcriptionBox.scrollHeight;
 
             updateWordCount();
+            
+            // Auto-detect and set RTL if Hebrew text is present
+            const currentModel = modelSelect.value;
+            const currentLanguage = languageSelect.value;
+            if (shouldUseRTL(currentModel, currentLanguage, text)) {
+                setTranscriptionDirection(true);
+            }
         }
 
         // Progress Panel Management
@@ -1030,6 +1092,13 @@
                 console.log('WebSocket connected');
                 updateStatus('connecting', 'Connecting to stream...');
                 
+                // Set RTL mode if Hebrew model or language is selected
+                if (shouldUseRTL(model, language, null)) {
+                    setTranscriptionDirection(true);
+                } else {
+                    setTranscriptionDirection(false);
+                }
+                
                 ws.send(JSON.stringify({ url, language, model, captureMode, diarization }));
                 
                 startBtn.classList.add('hidden');
@@ -1181,6 +1250,8 @@
             `;
             updateWordCount();
             resetProgressPanels();
+            // Reset to LTR when clearing
+            setTranscriptionDirection(false);
         }
 
         function copyToClipboard() {
@@ -1243,6 +1314,33 @@
         urlInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !startBtn.classList.contains('hidden')) {
                 startTranscription();
+            }
+        });
+
+        // Preview RTL mode when user selects Hebrew model or language
+        modelSelect.addEventListener('change', () => {
+            const model = modelSelect.value;
+            const language = languageSelect.value;
+            // Only preview if there's no active transcription
+            if (transcriptionBox.querySelector('.transcription-empty')) {
+                if (shouldUseRTL(model, language, null)) {
+                    setTranscriptionDirection(true);
+                } else {
+                    setTranscriptionDirection(false);
+                }
+            }
+        });
+
+        languageSelect.addEventListener('change', () => {
+            const model = modelSelect.value;
+            const language = languageSelect.value;
+            // Only preview if there's no active transcription
+            if (transcriptionBox.querySelector('.transcription-empty')) {
+                if (shouldUseRTL(model, language, null)) {
+                    setTranscriptionDirection(true);
+                } else {
+                    setTranscriptionDirection(false);
+                }
             }
         });
     </script>
