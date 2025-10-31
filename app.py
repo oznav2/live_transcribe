@@ -12,6 +12,7 @@ import queue
 import hashlib
 import shutil
 import re
+import time
 from pathlib import Path
 from typing import Optional, List, Tuple
 from contextlib import asynccontextmanager
@@ -1096,6 +1097,186 @@ def download_audio_with_ytdlp(url: str, language: Optional[str] = None, format: 
         logger.error(f"yt-dlp exception: {e}")
         try:
             import shutil
+            if 'temp_dir' in locals():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
+        return None
+
+
+async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = None, format: str = 'wav', websocket: WebSocket = None, use_cache: bool = True) -> Optional[str]:
+    """
+    Async version of download_audio_with_ytdlp with WebSocket progress updates
+    Returns path to audio file or None on failure
+    
+    Args:
+        url: URL to download from
+        language: Optional language hint
+        format: Output format ('wav' for Whisper, 'm4a' for general use)
+        websocket: WebSocket for sending progress updates
+        use_cache: Whether to check/use cached downloads
+    """
+    
+    # Check cache first if enabled
+    if use_cache:
+        cached_file = get_cached_download(url)
+        if cached_file:
+            logger.info(f"Using cached download from yt-dlp: {cached_file}")
+            if websocket:
+                await websocket.send_json({
+                    "type": "status",
+                    "message": "✓ Using cached audio file"
+                })
+            return cached_file
+    
+    try:
+        # Create temporary directory and file path for download
+        temp_dir = tempfile.mkdtemp()
+        base_filename = os.path.join(temp_dir, 'audio')
+        
+        # Base yt-dlp command
+        cmd = [
+            'yt-dlp',
+            '-x',  # Extract audio
+            '--audio-format', format,
+            '--audio-quality', '0',  # Best quality
+            '--downloader', 'ffmpeg',
+            '--no-playlist',
+            '--newline',  # Output progress on separate lines for parsing
+            '--progress',  # Show progress
+            '-o', base_filename + '.%(ext)s',
+        ]
+        
+        # Add format-specific postprocessor args for wav
+        if format == 'wav':
+            cmd.extend(['--postprocessor-args', 'ffmpeg:-ar 16000 -ac 1 -c:a pcm_s16le'])
+        
+        cmd.append(url)
+        
+        # Expected output path
+        output_path = f"{base_filename}.{format}"
+        
+        logger.info(f"Downloading audio from URL with yt-dlp (async, format={format}): {url}")
+        
+        if websocket:
+            await websocket.send_json({
+                "type": "status",
+                "message": "📥 Starting download with yt-dlp..."
+            })
+        
+        # Run yt-dlp asynchronously
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT
+        )
+        
+        # Read output line by line and send progress updates
+        last_update_time = time.time()
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+                
+            line_str = line.decode('utf-8').strip()
+            
+            # Parse progress from yt-dlp output
+            # Format: [download]  45.3% of 12.34MiB at 1.23MiB/s ETA 00:05
+            if '[download]' in line_str and '%' in line_str:
+                try:
+                    # Extract percentage
+                    if 'of' in line_str:
+                        parts = line_str.split()
+                        percent_str = [p for p in parts if '%' in p][0].replace('%', '')
+                        percent = float(percent_str)
+                        
+                        # Extract size info if available
+                        size_info = ""
+                        if 'of' in line_str and 'MiB' in line_str:
+                            of_idx = parts.index('of')
+                            if of_idx + 1 < len(parts):
+                                size_info = f" of {parts[of_idx + 1]}"
+                        
+                        # Extract ETA if available
+                        eta_info = ""
+                        if 'ETA' in line_str:
+                            eta_idx = parts.index('ETA')
+                            if eta_idx + 1 < len(parts):
+                                eta_info = f" (ETA: {parts[eta_idx + 1]})"
+                        
+                        # Send update every 2 seconds to avoid overwhelming
+                        current_time = time.time()
+                        if websocket and (current_time - last_update_time) >= 2:
+                            await websocket.send_json({
+                                "type": "download_progress",
+                                "percent": int(percent),
+                                "downloaded_mb": percent_str,
+                                "speed_mbps": "...",
+                                "eta_seconds": 0,
+                                "message": f"Downloading: {percent:.1f}%{size_info}{eta_info}"
+                            })
+                            last_update_time = current_time
+                            
+                except Exception as e:
+                    logger.debug(f"Failed to parse progress: {e}")
+            
+            # Log other important messages
+            elif any(keyword in line_str.lower() for keyword in ['error', 'warning', 'failed']):
+                logger.warning(f"yt-dlp: {line_str}")
+        
+        # Wait for process to complete
+        await process.wait()
+        
+        if process.returncode == 0 and os.path.exists(output_path):
+            file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+            logger.info(f"Successfully downloaded audio: {output_path} ({file_size_mb:.1f} MB)")
+            
+            if websocket:
+                await websocket.send_json({
+                    "type": "status",
+                    "message": f"✓ Download complete ({file_size_mb:.1f} MB)"
+                })
+            
+            # Cache the download if caching is enabled
+            if use_cache:
+                output_path = save_download_to_cache(url, output_path)
+            
+            return output_path
+        else:
+            logger.error(f"yt-dlp failed with return code: {process.returncode}")
+            
+            if websocket:
+                await websocket.send_json({
+                    "type": "status",
+                    "message": "⚠️ Download failed. Please check the URL and try again."
+                })
+            
+            # Cleanup temp directory
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except:
+                pass
+            return None
+            
+    except asyncio.TimeoutError:
+        logger.error("yt-dlp download timeout")
+        if websocket:
+            await websocket.send_json({
+                "error": "Download timeout. The video might be too large or the connection is slow."
+            })
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except:
+            pass
+        return None
+        
+    except Exception as e:
+        logger.error(f"yt-dlp async exception: {e}", exc_info=True)
+        if websocket:
+            await websocket.send_json({
+                "error": f"Download failed: {str(e)}"
+            })
+        try:
             if 'temp_dir' in locals():
                 shutil.rmtree(temp_dir, ignore_errors=True)
         except:
@@ -2725,8 +2906,8 @@ async def websocket_transcribe(websocket: WebSocket):
         if should_use_ytdlp(url):
             await websocket.send_json({"type": "status", "message": "Downloading audio with yt-dlp..."})
 
-            # Download entire file first with yt-dlp
-            audio_file = download_audio_with_ytdlp(url, language)
+            # Download entire file first with yt-dlp (async with progress)
+            audio_file = await download_audio_with_ytdlp_async(url, language, websocket=websocket)
             if not audio_file:
                 await websocket.send_json({"error": "Failed to download audio from URL"})
                 return
@@ -2820,7 +3001,7 @@ async def websocket_transcribe(websocket: WebSocket):
             try:
                 # Download complete audio using yt-dlp or ffmpeg (with progress tracking)
                 if should_use_ytdlp(url):
-                    audio_file = download_audio_with_ytdlp(url, language, format='wav')
+                    audio_file = await download_audio_with_ytdlp_async(url, language, format='wav', websocket=websocket)
                 else:
                     # Use ffmpeg for direct URLs - download complete file (no duration limit for VOD)
                     audio_file = await download_audio_with_ffmpeg(url, format='wav', duration=0, websocket=websocket)  # 0 = no limit
