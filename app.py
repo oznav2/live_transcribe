@@ -1290,19 +1290,33 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
             elif any(keyword in line_str.lower() for keyword in ['error', 'warning', 'failed']):
                 logger.warning(f"yt-dlp: {line_str}")
         
-        # Wait for process to complete
-        await process.wait()
+        # Wait for process to complete with timeout
+        try:
+            await asyncio.wait_for(process.wait(), timeout=60)  # 60 second timeout after output stops
+        except asyncio.TimeoutError:
+            logger.warning("yt-dlp process timeout - killing process")
+            try:
+                process.kill()
+                await process.wait()
+            except:
+                pass
+            has_error = True
+            error_messages.append("Process timeout")
         
         # Check if we collected any errors during processing
         if has_error and error_messages:
             error_summary = "\n".join(error_messages[:3])  # Show first 3 errors
             logger.error(f"yt-dlp failed with errors:\n{error_summary}")
+            logger.info("Triggering fallback to ffmpeg due to yt-dlp errors")
             # Don't send error to UI yet - let fallback mechanism try ffmpeg first
             try:
                 shutil.rmtree(temp_dir, ignore_errors=True)
             except:
                 pass
             return None
+        
+        # Check return code and file existence
+        logger.info(f"yt-dlp completed with return code: {process.returncode}, file exists: {os.path.exists(output_path)}")
         
         if process.returncode == 0 and os.path.exists(output_path):
             file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
@@ -1321,8 +1335,8 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
             return output_path
         else:
             # Download failed - log but don't send error to UI (let fallback try)
-            error_msg = f"yt-dlp failed with return code: {process.returncode}"
-            logger.warning(error_msg)
+            error_msg = f"yt-dlp failed with return code: {process.returncode}, file exists: {os.path.exists(output_path)}"
+            logger.warning(f"{error_msg} - will trigger fallback to ffmpeg")
             
             # Cleanup temp directory
             try:
