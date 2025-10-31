@@ -28,8 +28,8 @@ COPY requirements.ivrit.txt .
 # Install all requirements from requirements.ivrit.txt
 RUN pip install --no-cache-dir -r requirements.ivrit.txt
 
-# Install yt-dlp separately to ensure latest version
-RUN pip install --no-cache-dir yt-dlp
+# Install yt-dlp separately to ensure latest version (critical for YouTube support)
+RUN pip install --no-cache-dir --upgrade yt-dlp
 
 # NOTE: We do NOT install openai-whisper to avoid conflicts with faster-whisper
 # faster-whisper is superior for our use case:

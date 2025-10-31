@@ -1173,12 +1173,26 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
         
         # Read output line by line and send progress updates
         last_update_time = time.time()
+        has_error = False
+        error_messages = []
+        
         while True:
             line = await process.stdout.readline()
             if not line:
                 break
                 
             line_str = line.decode('utf-8').strip()
+            
+            # Detect critical errors
+            if 'ERROR:' in line_str:
+                has_error = True
+                error_messages.append(line_str)
+                logger.error(f"yt-dlp error: {line_str}")
+                if websocket:
+                    await websocket.send_json({
+                        "type": "status",
+                        "message": f"⚠️ Download error: {line_str.replace('ERROR:', '').strip()}"
+                    })
             
             # Parse progress from yt-dlp output
             # Format: [download]  45.3% of 12.34MiB at 1.23MiB/s ETA 00:05
@@ -1227,6 +1241,20 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
         # Wait for process to complete
         await process.wait()
         
+        # Check if we collected any errors during processing
+        if has_error and error_messages:
+            error_summary = "\n".join(error_messages[:3])  # Show first 3 errors
+            logger.error(f"yt-dlp failed with errors:\n{error_summary}")
+            if websocket:
+                await websocket.send_json({
+                    "error": f"Download failed: {error_messages[0].replace('ERROR:', '').strip()}"
+                })
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except:
+                pass
+            return None
+        
         if process.returncode == 0 and os.path.exists(output_path):
             file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
             logger.info(f"Successfully downloaded audio: {output_path} ({file_size_mb:.1f} MB)")
@@ -1243,12 +1271,22 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
             
             return output_path
         else:
-            logger.error(f"yt-dlp failed with return code: {process.returncode}")
+            # Download failed - provide detailed error
+            error_msg = f"yt-dlp failed with return code: {process.returncode}"
+            logger.error(error_msg)
+            
+            # Check for specific YouTube errors
+            if 'youtube' in url.lower():
+                if process.returncode == 1:
+                    error_msg = "YouTube download failed. This may be due to:\n" \
+                               "1. YouTube's recent changes (SABR streaming)\n" \
+                               "2. Video availability restrictions\n" \
+                               "3. Age-restricted or private video\n" \
+                               "Try updating yt-dlp: pip install -U yt-dlp"
             
             if websocket:
                 await websocket.send_json({
-                    "type": "status",
-                    "message": "⚠️ Download failed. Please check the URL and try again."
+                    "error": error_msg
                 })
             
             # Cleanup temp directory
