@@ -1106,7 +1106,10 @@ def download_audio_with_ytdlp(url: str, language: Optional[str] = None, format: 
 
 async def download_with_fallback(url: str, language: Optional[str] = None, format: str = 'wav', websocket: WebSocket = None, use_cache: bool = True) -> Optional[str]:
     """
-    Smart download with automatic fallback: tries yt-dlp first, then ffmpeg
+    Smart download with automatic fallback chain:
+    1. Try yt-dlp with cookies/user-agent
+    2. Try ffmpeg direct download
+    3. Return None if all methods fail
     
     Args:
         url: URL to download from
@@ -1141,7 +1144,7 @@ async def download_with_fallback(url: str, language: Optional[str] = None, forma
         })
     
     try:
-        # Try ffmpeg as fallback (works for direct streams and some YouTube URLs)
+        # Try ffmpeg as fallback (works for direct streams)
         audio_file = await download_audio_with_ffmpeg(url, format=format, duration=0, websocket=websocket, use_cache=use_cache)
         
         if audio_file:
@@ -1154,6 +1157,12 @@ async def download_with_fallback(url: str, language: Optional[str] = None, forma
             return audio_file
         else:
             logger.error(f"Both yt-dlp and ffmpeg failed for {url}")
+            # Both methods failed - provide helpful error message
+            if websocket and 'youtube.com' in url or 'youtu.be' in url:
+                await websocket.send_json({
+                    "type": "status",
+                    "message": "⚠️ YouTube download failed. This video may require authentication or have restrictions. Try a different video or update yt-dlp."
+                })
             return None
             
     except Exception as e:
@@ -1191,7 +1200,7 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
         temp_dir = tempfile.mkdtemp()
         base_filename = os.path.join(temp_dir, 'audio')
         
-        # Base yt-dlp command
+        # Base yt-dlp command with cookie support for YouTube bot detection
         cmd = [
             'yt-dlp',
             '-x',  # Extract audio
@@ -1201,8 +1210,18 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
             '--no-playlist',
             '--newline',  # Output progress on separate lines for parsing
             '--progress',  # Show progress
+            '--extractor-retries', '3',  # Retry extraction
+            '--fragment-retries', '3',  # Retry fragments
+            # Add user agent to avoid bot detection
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             '-o', base_filename + '.%(ext)s',
         ]
+        
+        # Try to use cookies if available (helps with bot detection)
+        cookies_file = os.path.expanduser('~/.config/yt-dlp/cookies.txt')
+        if os.path.exists(cookies_file):
+            cmd.extend(['--cookies', cookies_file])
+            logger.info("Using cookies file for YouTube authentication")
         
         # Add format-specific postprocessor args for wav
         if format == 'wav':
