@@ -195,6 +195,7 @@ app = FastAPI(title="Live Transcription Service", version="1.0.0", lifespan=life
 whisper_models = {}
 current_model = None
 current_model_name = None
+model_lock = threading.Lock()  # Protect model loading from race conditions
 # Global diarization pipeline cache
 diarization_pipeline = None
 diarization_pipeline_lock = threading.Lock()
@@ -392,94 +393,101 @@ def load_model(model_name: str):
     """Load a model based on its configuration"""
     global current_model, current_model_name
 
+    # Fast path: check if model already loaded (no lock needed for read)
     if model_name == current_model_name and current_model is not None:
         return current_model
-
-    if model_name not in MODEL_CONFIGS:
-        # Provide helpful error message about available models
-        available = list(MODEL_CONFIGS.keys())
-        if not available:
-            raise ValueError(f"No models are available. Please install faster-whisper, openai-whisper, or configure Deepgram API.")
-        raise ValueError(f"Unknown model: {model_name}. Available models: {', '.join(available)}")
-
-    config = MODEL_CONFIGS[model_name]
-
-    if config["type"] == "openai":
-        if not OPENAI_WHISPER_AVAILABLE:
-            # List alternative models
-            alternatives = [m for m, c in MODEL_CONFIGS.items() if c["type"] != "openai"]
-            alt_msg = f" Try one of these instead: {', '.join(alternatives)}" if alternatives else ""
-            raise ValueError(f"openai-whisper is not installed. Cannot load OpenAI Whisper models.{alt_msg}")
-        
-        logger.info(f"Loading OpenAI Whisper model: {config['name']}")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        logger.info(f"Using device: {device} (CUDA available: {torch.cuda.is_available()})")
-        try:
-            model = whisper.load_model(config["name"], device=device)
-        except Exception as e:
-            logger.warning(f"Failed to load model on {device}: {e}. Falling back to CPU.")
-            model = whisper.load_model(config["name"], device="cpu")
     
-    elif config["type"] == "faster_whisper":
-        if not FASTER_WHISPER_AVAILABLE:
-            raise ValueError(
-                "faster_whisper is not installed. Cannot load Ivrit CT2 models.\n"
-                "Install with: pip install faster-whisper>=1.1.1\n"
-                "Or use Docker: docker-compose -f docker-compose.ivrit.yml up"
-            )
-        
-        model_name_or_path = config.get("name", "ivrit-ai/whisper-large-v3-turbo-ct2")
-        device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
-        compute_type = config.get("compute_type", "float16" if device == "cuda" else "int8")
-        
-        logger.info(f"Loading faster_whisper model: {model_name_or_path}")
-        logger.info(f"Device: {device}, Compute type: {compute_type}")
-        
-        try:
-            # Load the faster_whisper model
-            model = faster_whisper.WhisperModel(
-                model_name_or_path,
-                device=device,
-                compute_type=compute_type,
-                num_workers=1,
-                download_root="/root/.cache/whisper"
-            )
-            # Wrap in a dict to maintain consistency with other model types
-            model = {
-                "type": "faster_whisper",
-                "model": model,
-                "config": config
-            }
-            logger.info(f"Successfully loaded faster_whisper model: {model_name_or_path}")
-        except Exception as e:
-            logger.error(f"Failed to load faster_whisper model: {e}")
-            # Fallback to CPU with int8
-            if device == "cuda":
-                logger.info("Attempting CPU fallback with int8 compute type...")
-                try:
-                    model = faster_whisper.WhisperModel(
-                        model_name_or_path,
-                        device="cpu",
-                        compute_type="int8",
-                        num_workers=1
-                    )
-                    model = {
-                        "type": "faster_whisper",
-                        "model": model,
-                        "config": config
-                    }
-                    logger.info("Successfully loaded model on CPU")
-                except Exception as e2:
-                    raise ValueError(f"Failed to load faster_whisper model on both GPU and CPU: {e2}")
-            else:
-                raise
-    
-    else:
-        raise ValueError(f"Unknown model type: {config['type']}")
+    # Slow path: need to load model, acquire lock to prevent race conditions
+    with model_lock:
+        # Double-check after acquiring lock (another thread might have loaded it)
+        if model_name == current_model_name and current_model is not None:
+            return current_model
 
-    current_model = model
-    current_model_name = model_name
-    return model
+        if model_name not in MODEL_CONFIGS:
+            # Provide helpful error message about available models
+            available = list(MODEL_CONFIGS.keys())
+            if not available:
+                raise ValueError(f"No models are available. Please install faster-whisper, openai-whisper, or configure Deepgram API.")
+            raise ValueError(f"Unknown model: {model_name}. Available models: {', '.join(available)}")
+
+        config = MODEL_CONFIGS[model_name]
+
+        if config["type"] == "openai":
+            if not OPENAI_WHISPER_AVAILABLE:
+                # List alternative models
+                alternatives = [m for m, c in MODEL_CONFIGS.items() if c["type"] != "openai"]
+                alt_msg = f" Try one of these instead: {', '.join(alternatives)}" if alternatives else ""
+                raise ValueError(f"openai-whisper is not installed. Cannot load OpenAI Whisper models.{alt_msg}")
+            
+            logger.info(f"Loading OpenAI Whisper model: {config['name']}")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info(f"Using device: {device} (CUDA available: {torch.cuda.is_available()})")
+            try:
+                model = whisper.load_model(config["name"], device=device)
+            except Exception as e:
+                logger.warning(f"Failed to load model on {device}: {e}. Falling back to CPU.")
+                model = whisper.load_model(config["name"], device="cpu")
+        
+        elif config["type"] == "faster_whisper":
+            if not FASTER_WHISPER_AVAILABLE:
+                raise ValueError(
+                    "faster_whisper is not installed. Cannot load Ivrit CT2 models.\n"
+                    "Install with: pip install faster-whisper>=1.1.1\n"
+                    "Or use Docker: docker-compose -f docker-compose.ivrit.yml up"
+                )
+            
+            model_name_or_path = config.get("name", "ivrit-ai/whisper-large-v3-turbo-ct2")
+            device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+            compute_type = config.get("compute_type", "float16" if device == "cuda" else "int8")
+            
+            logger.info(f"Loading faster_whisper model: {model_name_or_path}")
+            logger.info(f"Device: {device}, Compute type: {compute_type}")
+            
+            try:
+                # Load the faster_whisper model
+                model = faster_whisper.WhisperModel(
+                    model_name_or_path,
+                    device=device,
+                    compute_type=compute_type,
+                    num_workers=1,
+                    download_root="/root/.cache/whisper"
+                )
+                # Wrap in a dict to maintain consistency with other model types
+                model = {
+                    "type": "faster_whisper",
+                    "model": model,
+                    "config": config
+                }
+                logger.info(f"Successfully loaded faster_whisper model: {model_name_or_path}")
+            except Exception as e:
+                logger.error(f"Failed to load faster_whisper model: {e}")
+                # Fallback to CPU with int8
+                if device == "cuda":
+                    logger.info("Attempting CPU fallback with int8 compute type...")
+                    try:
+                        model = faster_whisper.WhisperModel(
+                            model_name_or_path,
+                            device="cpu",
+                            compute_type="int8",
+                            num_workers=1
+                        )
+                        model = {
+                            "type": "faster_whisper",
+                            "model": model,
+                            "config": config
+                        }
+                        logger.info("Successfully loaded model on CPU")
+                    except Exception as e2:
+                        raise ValueError(f"Failed to load faster_whisper model on both GPU and CPU: {e2}")
+                else:
+                    raise
+        
+        else:
+            raise ValueError(f"Unknown model type: {config['type']}")
+
+        current_model = model
+        current_model_name = model_name
+        return model
 
 
 def get_diarization_pipeline():
@@ -1000,17 +1008,36 @@ async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: in
                 audio_file
             ])
 
-            result = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+            # Use async subprocess to avoid blocking event loop
+            fallback_process = await asyncio.create_subprocess_exec(
+                *fallback_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            try:
+                stdout_fallback, stderr_fallback = await asyncio.wait_for(
+                    fallback_process.communicate(),
+                    timeout=300
+                )
+                result = fallback_process
+            except asyncio.TimeoutError:
+                logger.error("❌ ffmpeg fallback timeout after 5 minutes")
+                fallback_process.kill()
+                await fallback_process.wait()
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return None
 
             if result.returncode != 0:
-                logger.error(f"❌ ffmpeg fallback also failed: {result.stderr[:500]}")
+                stderr_fallback_str = stderr_fallback.decode() if stderr_fallback else ""
+                logger.error(f"❌ ffmpeg fallback also failed: {stderr_fallback_str[:500]}")
 
                 # Provide user-friendly error summary
-                if '410' in result.stderr or 'Gone' in result.stderr:
+                if '410' in stderr_fallback_str or 'Gone' in stderr_fallback_str:
                     logger.error("🔴 DOWNLOAD FAILED - URL has expired. Get a fresh URL from the source.")
-                elif '403' in result.stderr or 'Forbidden' in result.stderr:
+                elif '403' in stderr_fallback_str or 'Forbidden' in stderr_fallback_str:
                     logger.error("🔴 DOWNLOAD FAILED - Access denied. URL may require authentication.")
-                elif '404' in result.stderr:
+                elif '404' in stderr_fallback_str:
                     logger.error("🔴 DOWNLOAD FAILED - URL not found. Verify the URL is correct.")
                 else:
                     logger.error("🔴 DOWNLOAD FAILED - Unable to download audio from URL.")
@@ -1039,90 +1066,6 @@ async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: in
         logger.error(f"ffmpeg exception: {e}")
         if 'temp_dir' in locals():
             shutil.rmtree(temp_dir, ignore_errors=True)
-        return None
-
-
-def download_audio_with_ytdlp(url: str, language: Optional[str] = None, format: str = 'wav', use_cache: bool = True) -> Optional[str]:
-    """
-    Download and normalize audio from URL using yt-dlp with caching support
-    Returns path to audio file or None on failure
-
-    Args:
-        url: URL to download from
-        language: Optional language hint
-        format: Output format ('wav' for Whisper, 'm4a' for Deepgram/general use)
-        use_cache: Whether to check/use cached downloads
-    """
-    
-    # Check cache first if enabled
-    if use_cache:
-        cached_file = get_cached_download(url)
-        if cached_file:
-            logger.info(f"Using cached download from yt-dlp: {cached_file}")
-            return cached_file
-    try:
-        # Create temporary directory and file path for download
-        # yt-dlp needs a template path without extension (it adds the extension)
-        temp_dir = tempfile.mkdtemp()
-        base_filename = os.path.join(temp_dir, 'audio')
-
-        # Base yt-dlp command with critical HLS handling flags
-        cmd = [
-            'yt-dlp',
-            '-x',  # Extract audio
-            '--audio-format', format,
-            '--audio-quality', '0',  # Best quality
-            '--downloader', 'ffmpeg',  # Explicitly use ffmpeg downloader
-            # Removed --hls-use-mpegts (causes malformed MPEG-TS format that FFmpeg can't read)
-            '--no-playlist',
-            '--no-warnings',
-            '-o', base_filename + '.%(ext)s',  # Let yt-dlp add the extension
-        ]
-
-        # Add format-specific postprocessor args for wav (Whisper compatibility)
-        if format == 'wav':
-            cmd.extend(['--postprocessor-args', 'ffmpeg:-ar 16000 -ac 1 -c:a pcm_s16le'])
-
-        cmd.append(url)
-
-        # Expected output path after yt-dlp processes
-        output_path = f"{base_filename}.{format}"
-
-        logger.info(f"Downloading audio from URL with yt-dlp (format={format}): {url}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-
-        if result.returncode == 0 and os.path.exists(output_path):
-            logger.info(f"Successfully downloaded audio: {output_path}")
-            # Cache the download if caching is enabled
-            if use_cache:
-                output_path = save_download_to_cache(url, output_path)
-            return output_path
-        else:
-            logger.error(f"yt-dlp failed: {result.stderr}")
-            # Cleanup temp directory
-            try:
-                import shutil
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            except:
-                pass
-            return None
-
-    except subprocess.TimeoutExpired:
-        logger.error("yt-dlp download timeout after 5 minutes")
-        try:
-            import shutil
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except:
-            pass
-        return None
-    except Exception as e:
-        logger.error(f"yt-dlp exception: {e}")
-        try:
-            import shutil
-            if 'temp_dir' in locals():
-                shutil.rmtree(temp_dir, ignore_errors=True)
-        except:
-            pass
         return None
 
 
@@ -3150,71 +3093,6 @@ async def websocket_transcribe(websocket: WebSocket):
                     logger.debug(f"Keeping cached file: {audio_file}")
 
             return
-
-        # For Whisper/Ivrit models with VOD content: Download complete file first, then transcribe
-        # This prevents queue overflow and data loss with slow models
-        # Only use real-time streaming for actual live streams
-        is_vod = should_use_ytdlp(url) or any(pattern in url.lower() for pattern in ['.mp4', '.mp3', '.wav', '.m4a', 'video-', '/media/'])
-
-        if is_vod:
-            # VOD Mode: Download complete file first, then batch transcribe
-            await websocket.send_json({"type": "status", "message": "📥 Downloading complete audio file for batch transcription..."})
-
-            try:
-                # Download complete audio with automatic fallback (yt-dlp → ffmpeg)
-                if should_use_ytdlp(url):
-                    audio_file = await download_with_fallback(url, language, format='wav', websocket=websocket)
-                else:
-                    # Use ffmpeg for direct URLs - download complete file (no duration limit for VOD)
-                    audio_file = await download_audio_with_ffmpeg(url, format='wav', duration=0, websocket=websocket)  # 0 = no limit
-
-                if not audio_file:
-                    await websocket.send_json({"error": "Failed to download audio file. All download methods failed. Please check the URL or try a different video."})
-                    return
-
-                file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
-                await websocket.send_json({"type": "status", "message": f"✅ Downloaded {file_size_mb:.1f} MB. Starting batch transcription..."})
-
-                # Batch transcribe with incremental output and detailed progress
-                model = load_model(model_name)
-                model_config = MODEL_CONFIGS[model_name]
-
-                # Use diarization if requested
-                if enable_diarization:
-                    await websocket.send_json({"type": "status", "message": "🎭 Transcribing with speaker diarization..."})
-                    diarized_segments, detected_language = await transcribe_with_diarization(
-                        model, model_config, audio_file, language, websocket, model_name
-                    )
-                    # Combine all text for the transcript variable
-                    transcript = " ".join([seg.get("text", "") for seg in diarized_segments])
-                else:
-                    # Use the new incremental transcription function for better UX
-                    transcript, detected_language = await transcribe_with_incremental_output(
-                        model, model_config, audio_file, language, websocket, model_name, chunk_seconds=60
-                    )
-
-                # Send completion message
-                if transcript:
-                    await websocket.send_json({"type": "complete", "message": "Transcription complete"})
-                else:
-                    await websocket.send_json({"type": "status", "message": "⚠️ No speech detected in audio file"})
-                    await websocket.send_json({"type": "complete", "message": "Transcription complete (no speech detected)"})
-
-                # Cleanup (only delete if not in download cache)
-                try:
-                    if DOWNLOAD_CACHE_DIR not in Path(audio_file).parents:
-                        os.unlink(audio_file)
-                    else:
-                        logger.debug(f"Keeping cached file: {audio_file}")
-                except:
-                    pass
-
-                return
-
-            except Exception as e:
-                logger.error(f"Batch transcription error: {e}")
-                await websocket.send_json({"error": f"Transcription failed: {str(e)}"})
-                return
 
         # Otherwise, use direct FFmpeg streaming (for true live streams only)
         await websocket.send_json({"type": "status", "message": "Starting real-time audio stream..."})
