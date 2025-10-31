@@ -3048,6 +3048,12 @@ async def websocket_transcribe(websocket: WebSocket):
 
         # Check if we should use yt-dlp or direct streaming
         if should_use_ytdlp(url):
+            # Notify user that download is starting
+            await websocket.send_json({
+                "type": "status",
+                "message": "📥 Starting download from URL..."
+            })
+            
             # Download entire file first with automatic fallback (yt-dlp → ffmpeg)
             audio_file = await download_with_fallback(url, language, websocket=websocket)
             if not audio_file:
@@ -3107,19 +3113,31 @@ async def websocket_transcribe(websocket: WebSocket):
                 return
 
             # Transcribe the downloaded file with incremental output and detailed progress
-            await websocket.send_json({"type": "status", "message": "Transcribing downloaded audio..."})
-
             try:
                 model = load_model(model_name)
                 model_config = MODEL_CONFIGS[model_name]
                 
-                # Use the new incremental transcription function
-                transcription_text, detected_language = await transcribe_with_incremental_output(
-                    model, model_config, audio_file, language, websocket, model_name
-                )
+                # Check if diarization is requested
+                if enable_diarization:
+                    await websocket.send_json({"type": "status", "message": "🎭 Transcribing with speaker diarization..."})
+                    logger.info(f"Starting diarization for {audio_file}")
+                    
+                    diarized_segments, detected_language = await transcribe_with_diarization(
+                        model, model_config, audio_file, language, websocket, model_name
+                    )
+                    
+                    # Diarization already sends incremental chunks, just send completion
+                    await websocket.send_json({"type": "complete", "message": "Transcription with diarization complete"})
+                else:
+                    # Use regular incremental transcription
+                    await websocket.send_json({"type": "status", "message": "Transcribing downloaded audio..."})
+                    
+                    transcription_text, detected_language = await transcribe_with_incremental_output(
+                        model, model_config, audio_file, language, websocket, model_name
+                    )
 
-                # Send complete message
-                await websocket.send_json({"type": "complete", "message": "Transcription complete"})
+                    # Send complete message
+                    await websocket.send_json({"type": "complete", "message": "Transcription complete"})
 
             finally:
                 # Cleanup downloaded file (only if not in cache)
