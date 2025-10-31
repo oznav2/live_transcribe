@@ -1104,6 +1104,63 @@ def download_audio_with_ytdlp(url: str, language: Optional[str] = None, format: 
         return None
 
 
+async def download_with_fallback(url: str, language: Optional[str] = None, format: str = 'wav', websocket: WebSocket = None, use_cache: bool = True) -> Optional[str]:
+    """
+    Smart download with automatic fallback: tries yt-dlp first, then ffmpeg
+    
+    Args:
+        url: URL to download from
+        language: Optional language hint
+        format: Output format ('wav' or 'm4a')
+        websocket: WebSocket for progress updates
+        use_cache: Whether to check/use cached downloads
+        
+    Returns:
+        Path to downloaded audio file or None
+    """
+    
+    # Try yt-dlp first (better for YouTube and complex sites)
+    if websocket:
+        await websocket.send_json({
+            "type": "status",
+            "message": "📥 Attempting download with yt-dlp..."
+        })
+    
+    audio_file = await download_audio_with_ytdlp_async(url, language, format, websocket, use_cache)
+    
+    if audio_file:
+        return audio_file
+    
+    # yt-dlp failed, try ffmpeg fallback
+    logger.warning(f"yt-dlp failed for {url}, trying ffmpeg fallback...")
+    
+    if websocket:
+        await websocket.send_json({
+            "type": "status",
+            "message": "⚠️ yt-dlp failed, trying alternative download method (ffmpeg)..."
+        })
+    
+    try:
+        # Try ffmpeg as fallback (works for direct streams and some YouTube URLs)
+        audio_file = await download_audio_with_ffmpeg(url, format=format, duration=0, websocket=websocket, use_cache=use_cache)
+        
+        if audio_file:
+            logger.info(f"Successfully downloaded with ffmpeg fallback: {audio_file}")
+            if websocket:
+                await websocket.send_json({
+                    "type": "status",
+                    "message": "✓ Download successful using alternative method"
+                })
+            return audio_file
+        else:
+            logger.error(f"Both yt-dlp and ffmpeg failed for {url}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"ffmpeg fallback also failed: {e}")
+        return None
+
+
 async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = None, format: str = 'wav', websocket: WebSocket = None, use_cache: bool = True) -> Optional[str]:
     """
     Async version of download_audio_with_ytdlp with WebSocket progress updates
@@ -1183,16 +1240,11 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
                 
             line_str = line.decode('utf-8').strip()
             
-            # Detect critical errors
+            # Detect critical errors (but don't alert UI yet - let fallback handle it)
             if 'ERROR:' in line_str:
                 has_error = True
                 error_messages.append(line_str)
                 logger.error(f"yt-dlp error: {line_str}")
-                if websocket:
-                    await websocket.send_json({
-                        "type": "status",
-                        "message": f"⚠️ Download error: {line_str.replace('ERROR:', '').strip()}"
-                    })
             
             # Parse progress from yt-dlp output
             # Format: [download]  45.3% of 12.34MiB at 1.23MiB/s ETA 00:05
@@ -1245,10 +1297,7 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
         if has_error and error_messages:
             error_summary = "\n".join(error_messages[:3])  # Show first 3 errors
             logger.error(f"yt-dlp failed with errors:\n{error_summary}")
-            if websocket:
-                await websocket.send_json({
-                    "error": f"Download failed: {error_messages[0].replace('ERROR:', '').strip()}"
-                })
+            # Don't send error to UI yet - let fallback mechanism try ffmpeg first
             try:
                 shutil.rmtree(temp_dir, ignore_errors=True)
             except:
@@ -1271,23 +1320,9 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
             
             return output_path
         else:
-            # Download failed - provide detailed error
+            # Download failed - log but don't send error to UI (let fallback try)
             error_msg = f"yt-dlp failed with return code: {process.returncode}"
-            logger.error(error_msg)
-            
-            # Check for specific YouTube errors
-            if 'youtube' in url.lower():
-                if process.returncode == 1:
-                    error_msg = "YouTube download failed. This may be due to:\n" \
-                               "1. YouTube's recent changes (SABR streaming)\n" \
-                               "2. Video availability restrictions\n" \
-                               "3. Age-restricted or private video\n" \
-                               "Try updating yt-dlp: pip install -U yt-dlp"
-            
-            if websocket:
-                await websocket.send_json({
-                    "error": error_msg
-                })
+            logger.warning(error_msg)
             
             # Cleanup temp directory
             try:
@@ -1297,11 +1332,7 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
             return None
             
     except asyncio.TimeoutError:
-        logger.error("yt-dlp download timeout")
-        if websocket:
-            await websocket.send_json({
-                "error": "Download timeout. The video might be too large or the connection is slow."
-            })
+        logger.warning("yt-dlp download timeout - will try fallback")
         try:
             shutil.rmtree(temp_dir, ignore_errors=True)
         except:
@@ -1309,11 +1340,7 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
         return None
         
     except Exception as e:
-        logger.error(f"yt-dlp async exception: {e}", exc_info=True)
-        if websocket:
-            await websocket.send_json({
-                "error": f"Download failed: {str(e)}"
-            })
+        logger.warning(f"yt-dlp async exception: {e} - will try fallback")
         try:
             if 'temp_dir' in locals():
                 shutil.rmtree(temp_dir, ignore_errors=True)
@@ -2942,12 +2969,10 @@ async def websocket_transcribe(websocket: WebSocket):
 
         # Check if we should use yt-dlp or direct streaming
         if should_use_ytdlp(url):
-            await websocket.send_json({"type": "status", "message": "Downloading audio with yt-dlp..."})
-
-            # Download entire file first with yt-dlp (async with progress)
-            audio_file = await download_audio_with_ytdlp_async(url, language, websocket=websocket)
+            # Download entire file first with automatic fallback (yt-dlp → ffmpeg)
+            audio_file = await download_with_fallback(url, language, websocket=websocket)
             if not audio_file:
-                await websocket.send_json({"error": "Failed to download audio from URL"})
+                await websocket.send_json({"error": "Failed to download audio from URL. All download methods failed."})
                 return
 
             # Decide path: parallel chunking (flagged) vs single-file transcription (default)
@@ -3037,15 +3062,15 @@ async def websocket_transcribe(websocket: WebSocket):
             await websocket.send_json({"type": "status", "message": "📥 Downloading complete audio file for batch transcription..."})
 
             try:
-                # Download complete audio using yt-dlp or ffmpeg (with progress tracking)
+                # Download complete audio with automatic fallback (yt-dlp → ffmpeg)
                 if should_use_ytdlp(url):
-                    audio_file = await download_audio_with_ytdlp_async(url, language, format='wav', websocket=websocket)
+                    audio_file = await download_with_fallback(url, language, format='wav', websocket=websocket)
                 else:
                     # Use ffmpeg for direct URLs - download complete file (no duration limit for VOD)
                     audio_file = await download_audio_with_ffmpeg(url, format='wav', duration=0, websocket=websocket)  # 0 = no limit
 
                 if not audio_file:
-                    await websocket.send_json({"error": "Failed to download audio file. Check server logs for details."})
+                    await websocket.send_json({"error": "Failed to download audio file. All download methods failed. Please check the URL or try a different video."})
                     return
 
                 file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
