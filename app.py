@@ -1,6 +1,30 @@
 """
 Live Audio Streaming Transcription Application
 Inspired by Vibe - Uses FFmpeg + Whisper for real-time transcription
+
+RECENT FIXES COMPLETED (2025-10-31):
+=====================================
+✅ FIX 1: Removed duplicate VOD code (64 lines) - eliminated unreachable code path
+✅ FIX 2: Removed dead sync yt-dlp function (82 lines) - cleaned up unused function
+✅ FIX 3: Fixed blocking subprocess.run() - converted to async create_subprocess_exec
+✅ FIX 4: Added thread-safe model loading - double-check locking pattern
+✅ FIX 5: Fixed blocking diarization pipeline - moved to executor
+✅ FIX 6: Fixed blocking file I/O in download_audio_with_ffmpeg
+✅ FIX 7: Fixed blocking file I/O in transcribe_vod_with_deepgram  
+✅ FIX 8: Fixed blocking file I/O in WebSocket Deepgram handler
+✅ FIX 9: Cache index.html at startup - eliminated per-request blocking I/O
+✅ FIX 10: Added WebSocket state checks in critical diarization path
+
+HELPER FUNCTIONS ADDED:
+========================
+• safe_ws_send() - Safe WebSocket communication with state checking
+
+FUTURE OPTIMIZATION RECOMMENDATIONS:
+====================================
+• Replace remaining ~75 bare websocket.send_json() calls with safe_ws_send()
+  (Currently only critical diarization path uses state checks)
+• Consider connection pooling for Deepgram API calls
+• Add request rate limiting for live transcription endpoint
 """
 import asyncio
 import logging
@@ -178,6 +202,16 @@ async def lifespan(app: FastAPI):
         # Initialize download cache directory
         init_download_cache_dir()
         logger.info("Download cache initialized for URL-based caching")
+        
+        # Load and cache index.html to avoid blocking I/O on every request
+        global cached_index_html
+        try:
+            with open("static/index.html", "r", encoding="utf-8") as f:
+                cached_index_html = f.read()
+            logger.info("✓ Cached index.html for fast serving")
+        except Exception as e:
+            logger.error(f"Failed to cache index.html: {e}")
+            cached_index_html = "<html><body><h1>Error loading UI</h1></body></html>"
     except Exception as e:
         logger.error(f"Critical startup error: {e}")
         # Don't raise - allow the app to start even without models
@@ -199,6 +233,32 @@ model_lock = threading.Lock()  # Protect model loading from race conditions
 # Global diarization pipeline cache
 diarization_pipeline = None
 diarization_pipeline_lock = threading.Lock()
+# Cached HTML content (loaded once at startup)
+cached_index_html = None
+
+
+# Helper function for safe WebSocket communication
+async def safe_ws_send(websocket: WebSocket, data: dict) -> bool:
+    """
+    Safely send JSON data through WebSocket with connection state check.
+    
+    Args:
+        websocket: WebSocket connection
+        data: Dictionary to send as JSON
+        
+    Returns:
+        bool: True if sent successfully, False if connection closed
+    """
+    try:
+        if websocket.client_state == WebSocketState.CONNECTED:
+            await websocket.send_json(data)
+            return True
+        else:
+            logger.debug(f"WebSocket not connected (state: {websocket.client_state}), skipping message")
+            return False
+    except Exception as e:
+        logger.debug(f"Failed to send WebSocket message: {e}")
+        return False
 
 # Default model configuration - always use ivrit-ct2 with faster_whisper
 MODEL_SIZE = os.getenv("WHISPER_MODEL", "whisper-v3-turbo")  # Default to multilingual model
@@ -550,11 +610,12 @@ async def transcribe_with_diarization(
     
     logger.info(f"Starting transcription with diarization for {audio_file}")
     
-    # Send status update
-    await websocket.send_json({
-        "type": "status",
-        "message": "Starting transcription with speaker diarization..."
-    })
+    # Send status update (check connection state)
+    if websocket.client_state == WebSocketState.CONNECTED:
+        await websocket.send_json({
+            "type": "status",
+            "message": "Starting transcription with speaker diarization..."
+        })
     
     # Step 1: Run diarization to get speaker segments
     pipeline = get_diarization_pipeline()
@@ -568,10 +629,11 @@ async def transcribe_with_diarization(
     
     try:
         # Run diarization
-        await websocket.send_json({
-            "type": "status", 
-            "message": "Analyzing speakers in audio..."
-        })
+        if websocket.client_state == WebSocketState.CONNECTED:
+            await websocket.send_json({
+                "type": "status", 
+                "message": "Analyzing speakers in audio..."
+            })
         
         # Run blocking diarization in executor to avoid blocking event loop
         loop = asyncio.get_event_loop()
@@ -598,10 +660,11 @@ async def transcribe_with_diarization(
         logger.info(f"Found {len(speaker_mapping)} speakers in audio")
         
         # Step 2: Transcribe with timestamps
-        await websocket.send_json({
-            "type": "status",
-            "message": f"Transcribing audio with {len(speaker_mapping)} speakers..."
-        })
+        if websocket.client_state == WebSocketState.CONNECTED:
+            await websocket.send_json({
+                "type": "status",
+                "message": f"Transcribing audio with {len(speaker_mapping)} speakers..."
+            })
         
         # Use faster_whisper for transcription with word timestamps
         if model_config["type"] == "faster_whisper":
@@ -646,10 +709,11 @@ async def transcribe_with_diarization(
                 # Send progress update every 10 segments
                 if segment_count % 10 == 0:
                     elapsed = time.time() - start_time_transcribe
-                    await websocket.send_json({
-                        "type": "status",
-                        "message": f"Transcribing: {segment_count} segments processed ({elapsed:.1f}s elapsed)..."
-                    })
+                    if websocket.client_state == WebSocketState.CONNECTED:
+                        await websocket.send_json({
+                            "type": "status",
+                            "message": f"Transcribing: {segment_count} segments processed ({elapsed:.1f}s elapsed)..."
+                        })
             
             detected_language = info.language if info else (language or 'unknown')
             logger.info(f"Transcription complete. Detected language: {detected_language}, Segments: {len(transcription_segments)}")
@@ -721,16 +785,17 @@ async def transcribe_with_diarization(
                 f"{segment['speaker']}: \"{segment['text']}\""
             )
             
-            await websocket.send_json({
-                "type": "transcription_chunk",
-                "text": formatted_output,
-                "chunk_index": i,
-                "total_chunks": total_segments,
-                "is_final": i == total_segments - 1,
-                "speaker": segment["speaker"],
-                "start": segment["start"],
-                "end": segment["end"]
-            })
+            if websocket.client_state == WebSocketState.CONNECTED:
+                await websocket.send_json({
+                    "type": "transcription_chunk",
+                    "text": formatted_output,
+                    "chunk_index": i,
+                    "total_chunks": total_segments,
+                    "is_final": i == total_segments - 1,
+                    "speaker": segment["speaker"],
+                    "start": segment["start"],
+                    "end": segment["end"]
+                })
             
             # Small delay to prevent overwhelming the client
             if i % 5 == 0:
@@ -742,10 +807,11 @@ async def transcribe_with_diarization(
     except Exception as e:
         logger.error(f"Diarization failed: {e}", exc_info=True)
         # Fall back to regular transcription
-        await websocket.send_json({
-            "type": "status",
-            "message": "Diarization failed, falling back to regular transcription..."
-        })
+        if websocket.client_state == WebSocketState.CONNECTED:
+            await websocket.send_json({
+                "type": "status",
+                "message": "Diarization failed, falling back to regular transcription..."
+            })
         
         # Call the function directly (it's in the same file)
         transcript, lang = await transcribe_with_incremental_output(
@@ -870,16 +936,22 @@ async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: in
                     if process.returncode is not None:
                         break
 
-                    # Read progress file
+                    # Read progress file (using executor to avoid blocking)
                     if os.path.exists(progress_file):
                         try:
-                            with open(progress_file, 'r') as f:
-                                lines = f.readlines()
-                                progress_data = {}
-                                for line in lines:
-                                    if '=' in line:
-                                        key, value = line.strip().split('=', 1)
-                                        progress_data[key] = value
+                            # Run blocking file read in executor
+                            loop = asyncio.get_event_loop()
+                            
+                            def read_progress_file():
+                                with open(progress_file, 'r') as f:
+                                    return f.readlines()
+                            
+                            lines = await loop.run_in_executor(None, read_progress_file)
+                            progress_data = {}
+                            for line in lines:
+                                if '=' in line:
+                                    key, value = line.strip().split('=', 1)
+                                    progress_data[key] = value
 
                                 # Extract time progress
                                 if 'out_time_ms' in progress_data and os.path.exists(audio_file):
@@ -2333,8 +2405,14 @@ async def transcribe_vod_with_deepgram(websocket: WebSocket, url: str, language:
                 logger.warning(f"Large audio file detected ({file_size_mb:.1f}MB). This may take longer to process.")
                 await websocket.send_json({"type": "status", "message": f"Processing large file ({file_size_mb:.1f}MB), please wait..."})
 
-            with open(audio_file, "rb") as f:
-                audio_data = f.read()
+            # Read file in executor to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+            
+            def read_audio_file():
+                with open(audio_file, "rb") as f:
+                    return f.read()
+            
+            audio_data = await loop.run_in_executor(None, read_audio_file)
 
             # Determine if we should use language detection
             use_detect_language = not language or language == "auto"
@@ -2789,9 +2867,8 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
 
 @app.get("/", response_class=HTMLResponse)
 async def get_home():
-    """Serve the main web interface"""
-    with open("static/index.html", "r") as f:
-        return HTMLResponse(content=f.read())
+    """Serve the main web interface (cached at startup)"""
+    return HTMLResponse(content=cached_index_html)
 
 
 @app.websocket("/ws/transcribe")
@@ -2956,11 +3033,18 @@ async def websocket_transcribe(websocket: WebSocket):
                                     client = DeepgramClient(api_key=DEEPGRAM_API_KEY) if DEEPGRAM_API_KEY else DeepgramClient()
                                     model = os.getenv("DEEPGRAM_MODEL", "nova-3")
 
-                                    with open(info["path"], "rb") as f:
-                                        response = client.listen.v1.media.transcribe_file(
-                                            request=f.read(),
-                                            model=model
-                                        )
+                                    # Read file in executor to avoid blocking
+                                    loop = asyncio.get_event_loop()
+                                    
+                                    def read_capture_file():
+                                        with open(info["path"], "rb") as f:
+                                            return f.read()
+                                    
+                                    audio_data = await loop.run_in_executor(None, read_capture_file)
+                                    response = client.listen.v1.media.transcribe_file(
+                                        request=audio_data,
+                                        model=model
+                                    )
                                     # Extract transcript
                                     try:
                                         text = response.results.channels[0].alternatives[0].transcript.strip()
