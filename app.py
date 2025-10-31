@@ -595,34 +595,54 @@ async def transcribe_with_diarization(
         
         # Use faster_whisper for transcription with word timestamps
         if model_config["type"] == "faster_whisper":
-            fw_model = model["model"] if isinstance(model, dict) else model
+            # Extract the actual WhisperModel from the wrapper dict
+            if isinstance(model, dict) and "model" in model:
+                fw_model = model["model"]
+            else:
+                fw_model = model
             
             # Determine language
             default_lang = None
             if model_name and "ivrit" in model_name.lower():
                 default_lang = "he"
             
+            logger.info(f"Running faster_whisper transcription with word timestamps for diarization")
+            
             # Transcribe with word-level timestamps for better alignment
-            segments, info = fw_model.transcribe(
+            # Note: faster_whisper.transcribe returns a generator
+            segments_generator, info = fw_model.transcribe(
                 audio_file,
                 language=language or default_lang,
                 word_timestamps=True,  # Enable word timestamps for better alignment
-                beam_size=5,
+                beam_size=int(os.getenv("IVRIT_BEAM_SIZE", "5")),
                 best_of=5,
                 patience=1,
                 temperature=0
             )
             
-            # Convert segments to list with timestamps
+            # Convert segments to list with timestamps and show progress
             transcription_segments = []
-            for segment in segments:
+            segment_count = 0
+            start_time_transcribe = time.time()
+            
+            for segment in segments_generator:
                 transcription_segments.append({
                     "start": segment.start,
                     "end": segment.end,
                     "text": segment.text.strip()
                 })
+                segment_count += 1
+                
+                # Send progress update every 10 segments
+                if segment_count % 10 == 0:
+                    elapsed = time.time() - start_time_transcribe
+                    await websocket.send_json({
+                        "type": "status",
+                        "message": f"Transcribing: {segment_count} segments processed ({elapsed:.1f}s elapsed)..."
+                    })
             
             detected_language = info.language if info else (language or 'unknown')
+            logger.info(f"Transcription complete. Detected language: {detected_language}, Segments: {len(transcription_segments)}")
             
         else:
             # Fallback for OpenAI whisper
@@ -1267,28 +1287,56 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
                         
                         # Extract size info if available
                         size_info = ""
-                        if 'of' in line_str and 'MiB' in line_str:
+                        total_size = ""
+                        if 'of' in line_str and ('MiB' in line_str or 'GiB' in line_str or 'KiB' in line_str):
                             of_idx = parts.index('of')
                             if of_idx + 1 < len(parts):
-                                size_info = f" of {parts[of_idx + 1]}"
+                                total_size = parts[of_idx + 1]
+                                size_info = f" of {total_size}"
                         
-                        # Extract ETA if available
+                        # Extract speed if available (e.g., "at 1.23MiB/s")
+                        speed_info = ""
+                        speed_mbps = "..."
+                        if 'at' in line_str and '/s' in line_str:
+                            try:
+                                at_idx = parts.index('at')
+                                if at_idx + 1 < len(parts):
+                                    speed_str = parts[at_idx + 1]
+                                    speed_info = f" at {speed_str}"
+                                    speed_mbps = speed_str
+                            except (ValueError, IndexError):
+                                pass
+                        
+                        # Extract ETA if available (e.g., "ETA 00:05" or "ETA Unknown")
                         eta_info = ""
+                        eta_seconds = 0
                         if 'ETA' in line_str:
-                            eta_idx = parts.index('ETA')
-                            if eta_idx + 1 < len(parts):
-                                eta_info = f" (ETA: {parts[eta_idx + 1]})"
+                            try:
+                                eta_idx = parts.index('ETA')
+                                if eta_idx + 1 < len(parts):
+                                    eta_str = parts[eta_idx + 1]
+                                    eta_info = f" (ETA: {eta_str})"
+                                    
+                                    # Parse ETA to seconds (format: MM:SS or HH:MM:SS)
+                                    if eta_str not in ['Unknown', '?', '--:--']:
+                                        time_parts = eta_str.split(':')
+                                        if len(time_parts) == 2:  # MM:SS
+                                            eta_seconds = int(time_parts[0]) * 60 + int(time_parts[1])
+                                        elif len(time_parts) == 3:  # HH:MM:SS
+                                            eta_seconds = int(time_parts[0]) * 3600 + int(time_parts[1]) * 60 + int(time_parts[2])
+                            except (ValueError, IndexError):
+                                pass
                         
                         # Send update every 2 seconds to avoid overwhelming
                         current_time = time.time()
-                        if websocket and (current_time - last_update_time) >= 2:
+                        if websocket and (current_time - last_update_time) >= 1:  # Increased frequency to 1s
                             await websocket.send_json({
                                 "type": "download_progress",
                                 "percent": int(percent),
-                                "downloaded_mb": percent_str,
-                                "speed_mbps": "...",
-                                "eta_seconds": 0,
-                                "message": f"Downloading: {percent:.1f}%{size_info}{eta_info}"
+                                "downloaded_mb": f"{percent:.1f}%{size_info}",
+                                "speed_mbps": speed_mbps,
+                                "eta_seconds": eta_seconds,
+                                "message": f"Downloading: {percent:.1f}%{size_info}{speed_info}{eta_info}"
                             })
                             last_update_time = current_time
                             
@@ -1767,22 +1815,30 @@ async def transcribe_with_incremental_output(
                 })
                 transcripts.append(chunk_text)
             
-            # Send progress update
+            # Calculate progress metrics
+            chunk_duration = time.time() - chunk_start
             elapsed = time.time() - start_time
-            metrics = calculate_progress_metrics(audio_duration, elapsed, i + 1, total_chunks)
             
+            # Calculate ETA based on average chunk processing time
+            avg_time_per_chunk = elapsed / (i + 1)
+            remaining_chunks = total_chunks - (i + 1)
+            eta_seconds = int(avg_time_per_chunk * remaining_chunks)
+            percentage = int(((i + 1) / total_chunks) * 100)
+            
+            # Send detailed progress update
             await websocket.send_json({
                 "type": "transcription_progress",
                 "audio_duration": audio_duration,
-                "percentage": metrics["percentage"],
-                "eta_seconds": metrics["eta_seconds"],
-                "speed": metrics["speed"],
+                "percentage": percentage,
+                "eta_seconds": eta_seconds,
+                "speed": f"{avg_time_per_chunk:.1f}s/chunk",
                 "elapsed_seconds": int(elapsed),
                 "chunks_processed": i + 1,
-                "total_chunks": total_chunks
+                "total_chunks": total_chunks,
+                "message": f"Transcribing: {percentage}% (chunk {i+1}/{total_chunks}, ETA: {eta_seconds}s)"
             })
             
-            logger.info(f"Processed chunk {i+1}/{total_chunks} in {time.time()-chunk_start:.1f}s")
+            logger.info(f"Processed chunk {i+1}/{total_chunks} in {chunk_duration:.1f}s (avg: {avg_time_per_chunk:.1f}s/chunk, ETA: {eta_seconds}s)")
         
         # Cleanup chunk files
         try:
