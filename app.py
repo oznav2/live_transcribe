@@ -565,7 +565,9 @@ async def transcribe_with_diarization(
             "message": "Analyzing speakers in audio..."
         })
         
-        diarization = pipeline(audio_file)
+        # Run blocking diarization in executor to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        diarization = await loop.run_in_executor(None, pipeline, audio_file)
         
         # Convert diarization output to segments
         speaker_segments = []
