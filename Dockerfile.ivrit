@@ -39,12 +39,28 @@ RUN pip install --no-cache-dir --upgrade yt-dlp
 # - Ivrit models are in CT2 format specifically for faster-whisper
 # The app.py handles missing openai-whisper gracefully and will use faster-whisper
 
-# Pre-download and cache Ivrit models during build
-# This ensures models are available immediately at runtime
-RUN python3 -c "import faster_whisper; print('Downloading ivrit-ai/whisper-large-v3-turbo-ct2...'); faster_whisper.WhisperModel('ivrit-ai/whisper-large-v3-turbo-ct2', device='cpu', compute_type='int8'); print('✓ Model downloaded successfully')"
+# Pre-download and cache Ivrit models during build (with error handling)
+# This ensures models are available immediately at runtime, but doesn't fail build if network issues
+RUN python3 -c "\
+try: \
+    import faster_whisper; \
+    print('Downloading ivrit-ai/whisper-large-v3-turbo-ct2...'); \
+    faster_whisper.WhisperModel('ivrit-ai/whisper-large-v3-turbo-ct2', device='cpu', compute_type='int8'); \
+    print('✓ Ivrit model downloaded successfully'); \
+except Exception as e: \
+    print(f'⚠️ Could not pre-download Ivrit model (will download at runtime): {e}'); \
+" || echo "⚠️ Ivrit model download failed - will download at first use"
 
 # Also download the general large-v3-turbo as backup
-RUN python3 -c "import faster_whisper; print('Downloading large-v3-turbo...'); faster_whisper.WhisperModel('large-v3-turbo', device='cpu', compute_type='int8'); print('✓ Model downloaded successfully')"
+RUN python3 -c "\
+try: \
+    import faster_whisper; \
+    print('Downloading large-v3-turbo...'); \
+    faster_whisper.WhisperModel('large-v3-turbo', device='cpu', compute_type='int8'); \
+    print('✓ large-v3-turbo model downloaded successfully'); \
+except Exception as e: \
+    print(f'⚠️ Could not pre-download large-v3-turbo (will download at runtime): {e}'); \
+" || echo "⚠️ large-v3-turbo download failed - will download at first use"
 
 # Pre-download diarization models (with error handling to prevent build failure)
 # Try to download the models, but don't fail the build if it doesn't work
