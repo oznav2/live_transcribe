@@ -2092,6 +2092,128 @@ class TranscriptionRequest(BaseModel):
     language: Optional[str] = None
 
 
+class VideoInfoRequest(BaseModel):
+    url: str
+
+
+def format_duration(seconds: int) -> str:
+    """Format duration in seconds to MM:SS or HH:MM:SS"""
+    if seconds is None:
+        return "N/A"
+    
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    else:
+        return f"{minutes}:{secs:02d}"
+
+
+def format_view_count(count: int) -> str:
+    """Format view count with K, M, B suffixes"""
+    if count is None:
+        return "N/A"
+    
+    if count >= 1_000_000_000:
+        return f"{count / 1_000_000_000:.1f}B"
+    elif count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}M"
+    elif count >= 1_000:
+        return f"{count / 1_000:.1f}K"
+    else:
+        return str(count)
+
+
+def is_youtube_url(url: str) -> bool:
+    """Check if URL is a YouTube URL"""
+    youtube_patterns = [
+        r'youtube\.com/watch\?v=',
+        r'youtu\.be/',
+        r'youtube\.com/embed/',
+        r'youtube\.com/v/',
+        r'm\.youtube\.com'
+    ]
+    
+    import re
+    url_lower = url.lower()
+    return any(re.search(pattern, url_lower) for pattern in youtube_patterns)
+
+
+async def get_youtube_metadata(url: str) -> Optional[dict]:
+    """
+    Extract metadata from YouTube video using yt-dlp
+    
+    Args:
+        url: YouTube video URL
+    
+    Returns:
+        dict with keys: title, channel, duration, view_count, thumbnail
+        None if extraction fails
+    """
+    try:
+        logger.info(f"Extracting metadata for: {url}")
+        
+        # yt-dlp command to extract metadata without downloading
+        cmd = [
+            'yt-dlp',
+            '--dump-json',
+            '--no-playlist',
+            '--skip-download',
+            url
+        ]
+        
+        # Run command asynchronously
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Wait for completion with timeout
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=10.0  # 10 second timeout
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            logger.error(f"Timeout extracting metadata for {url}")
+            return None
+        
+        if process.returncode != 0:
+            error_msg = stderr.decode('utf-8', errors='ignore')
+            logger.error(f"yt-dlp metadata extraction failed: {error_msg}")
+            return None
+        
+        # Parse JSON output
+        import json
+        try:
+            metadata = json.loads(stdout.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse yt-dlp JSON output: {e}")
+            return None
+        
+        # Extract relevant fields
+        result = {
+            'title': metadata.get('title', 'Unknown Title'),
+            'channel': metadata.get('uploader', metadata.get('channel', 'Unknown Channel')),
+            'duration': metadata.get('duration', 0),
+            'view_count': metadata.get('view_count', 0),
+            'thumbnail': metadata.get('thumbnail', ''),
+            'is_youtube': True
+        }
+        
+        logger.info(f"Successfully extracted metadata: {result['title']}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error extracting YouTube metadata: {e}", exc_info=True)
+        return None
+
+
 class AudioStreamProcessor:
     """Processes audio streams from URLs using FFmpeg and transcribes with Whisper"""
     
@@ -3301,6 +3423,62 @@ async def health_check():
         "whisper_model": current_model_name or MODEL_SIZE,
         "model_loaded": current_model is not None
     }
+
+
+@app.post("/api/video-info")
+async def get_video_info(request: VideoInfoRequest):
+    """
+    Fetch YouTube video metadata
+    
+    Returns JSON with video information or error
+    """
+    try:
+        url = str(request.url)
+        
+        # Validate URL format
+        if not url.startswith(('http://', 'https://')):
+            return {
+                "success": False,
+                "error": "Invalid URL format"
+            }
+        
+        # Check if it's a YouTube URL
+        if not is_youtube_url(url):
+            return {
+                "success": False,
+                "error": "Not a YouTube URL"
+            }
+        
+        # Extract metadata
+        metadata = await get_youtube_metadata(url)
+        
+        if metadata is None:
+            return {
+                "success": False,
+                "error": "Failed to fetch video information"
+            }
+        
+        # Format the response
+        return {
+            "success": True,
+            "data": {
+                "title": metadata['title'],
+                "channel": metadata['channel'],
+                "duration_seconds": metadata['duration'],
+                "duration_formatted": format_duration(metadata['duration']),
+                "view_count": metadata['view_count'],
+                "view_count_formatted": format_view_count(metadata['view_count']),
+                "thumbnail": metadata['thumbnail'],
+                "is_youtube": metadata['is_youtube']
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in video info endpoint: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": "Internal server error"
+        }
 
 
 @app.get("/gpu")
