@@ -1124,6 +1124,40 @@
                     // Handle download progress updates
                     updateDownloadProgress(data);
                     updateStatus('active', `Downloading: ${data.percent}% (${formatTime(data.eta_seconds)} remaining)`);
+                } else if (data.type === 'cached_file') {
+                    // Handle cached file notification - show prominently
+                    updateStatus('active', data.message);
+                    
+                    // Mark download stage as completed (skipped)
+                    showStageIndicator();
+                    updateStage(1, 'completed');
+                    updateStage(2, 'active');
+                    
+                    // Hide download progress panel if visible
+                    hideDownloadProgress();
+                    
+                    // Show prominent notification
+                    const notificationHtml = `
+                        <div style="background: #10b981; color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; animation: slideIn 0.3s ease-out;">
+                            <i class="fas fa-check-circle" style="font-size: 20px;"></i>
+                            <div>
+                                <strong>Cache Hit!</strong><br>
+                                <small>File already downloaded (${data.file_size_mb} MB) - Processing immediately</small>
+                            </div>
+                        </div>
+                    `;
+                    
+                    const transcriptionArea = document.getElementById('transcription');
+                    if (transcriptionArea) {
+                        const notificationDiv = document.createElement('div');
+                        notificationDiv.innerHTML = notificationHtml;
+                        transcriptionArea.insertBefore(notificationDiv.firstElementChild, transcriptionArea.firstChild);
+                        
+                        // Auto-remove after 5 seconds
+                        setTimeout(() => {
+                            notificationDiv.firstElementChild?.remove();
+                        }, 5000);
+                    }
                 } else if (data.type === 'transcription_chunk') {
                     // Handle incremental transcription chunks
                     addTranscription(data.text);

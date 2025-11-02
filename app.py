@@ -603,8 +603,12 @@ async def transcribe_with_diarization(
     Each segment contains:
     - start: start time in seconds
     - end: end time in seconds  
-    - speaker: speaker label (SPEAKER_1, SPEAKER_2, etc.)
+    - speaker: speaker label (דובר_1, דובר_2 for Hebrew/Ivrit models; SPEAKER_1, SPEAKER_2 for others)
     - text: transcribed text
+    
+    Speaker labels are automatically localized based on model:
+    - Ivrit models (Hebrew): דובר_1, דובר_2, דובר_3...
+    - Other models: SPEAKER_1, SPEAKER_2, SPEAKER_3...
     """
     import time
     
@@ -648,12 +652,18 @@ async def transcribe_with_diarization(
                 "speaker": speaker
             })
         
-        # Renumber speakers to SPEAKER_1, SPEAKER_2, etc.
+        # Detect if using Hebrew (Ivrit) model and set appropriate speaker label prefix
+        is_hebrew_model = model_name and "ivrit" in model_name.lower()
+        speaker_prefix = "דובר_" if is_hebrew_model else "SPEAKER_"
+        
+        logger.info(f"Using speaker label prefix: '{speaker_prefix}' (Hebrew model: {is_hebrew_model})")
+        
+        # Renumber speakers to דובר_1, דובר_2 (Hebrew) or SPEAKER_1, SPEAKER_2 (other languages)
         speaker_mapping = {}
         speaker_counter = 1
         for segment in speaker_segments:
             if segment["speaker"] not in speaker_mapping:
-                speaker_mapping[segment["speaker"]] = f"SPEAKER_{speaker_counter}"
+                speaker_mapping[segment["speaker"]] = f"{speaker_prefix}{speaker_counter}"
                 speaker_counter += 1
             segment["speaker"] = speaker_mapping[segment["speaker"]]
         
@@ -872,10 +882,15 @@ async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: in
         if cached_file:
             if websocket:
                 file_size_mb = os.path.getsize(cached_file) / (1024 * 1024)
+                # Send special cached_file message type for prominent UI display
                 await websocket.send_json({
-                    "type": "status",
-                    "message": f"✅ Using cached audio file ({file_size_mb:.1f} MB)"
+                    "type": "cached_file",
+                    "message": f"✅ Audio file already downloaded ({file_size_mb:.1f} MB) - Using cache, skipping download",
+                    "file_size_mb": round(file_size_mb, 2),
+                    "skipped_download": True,
+                    "cached_path": os.path.basename(cached_file)
                 })
+            logger.info(f"Using cached audio file: {cached_file} ({file_size_mb:.1f} MB)")
             return cached_file
     if duration == 0:
         logger.info(f"Downloading COMPLETE audio file with ffmpeg (format: {format})...")
@@ -1226,9 +1241,14 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
         if cached_file:
             logger.info(f"Using cached download from yt-dlp: {cached_file}")
             if websocket:
+                file_size_mb = os.path.getsize(cached_file) / (1024 * 1024)
+                # Send special cached_file message type for prominent UI display
                 await websocket.send_json({
-                    "type": "status",
-                    "message": "✓ Using cached audio file"
+                    "type": "cached_file",
+                    "message": f"✅ Audio file already downloaded ({file_size_mb:.1f} MB) - Using cache, skipping download",
+                    "file_size_mb": round(file_size_mb, 2),
+                    "skipped_download": True,
+                    "cached_path": os.path.basename(cached_file)
                 })
             return cached_file
     
@@ -1776,48 +1796,90 @@ async def transcribe_with_incremental_output(
         for i, chunk_file in enumerate(chunk_files):
             chunk_start = time.time()
             
-            # Transcribe chunk
+            # Send progress BEFORE processing (so user sees it immediately)
+            # Calculate preliminary progress
+            elapsed_so_far = time.time() - start_time
+            if i > 0:
+                avg_time_per_chunk = elapsed_so_far / i
+                remaining_chunks = total_chunks - i
+                eta_seconds = int(avg_time_per_chunk * remaining_chunks)
+            else:
+                eta_seconds = 0  # Unknown for first chunk
+            
+            percentage_starting = int((i / total_chunks) * 100)
+            
+            # Send "starting chunk" progress
+            await websocket.send_json({
+                "type": "transcription_progress",
+                "audio_duration": audio_duration,
+                "percentage": percentage_starting,
+                "eta_seconds": eta_seconds,
+                "speed": f"{avg_time_per_chunk:.1f}s/chunk" if i > 0 else "calculating...",
+                "elapsed_seconds": int(elapsed_so_far),
+                "chunks_processed": i,
+                "total_chunks": total_chunks,
+                "message": f"Processing chunk {i+1}/{total_chunks}..."
+            })
+            
+            # Transcribe chunk (run in executor to avoid blocking event loop)
+            loop = asyncio.get_event_loop()
+            
             if model_config["type"] == "faster_whisper":
                 # Use faster_whisper for chunks
                 fw_model = model["model"] if isinstance(model, dict) else model
-                try:
-                    # For Ivrit models, use Hebrew as default only if it's an Ivrit model
-                    default_lang = None
-                    if model_name and "ivrit" in model_name.lower():
-                        # Ivrit models are Hebrew-optimized, default to Hebrew if no language specified
-                        default_lang = "he"
-                    
-                    segments, info = fw_model.transcribe(
-                        chunk_file,
-                        language=language or default_lang,  # None means auto-detect
-                        beam_size=5,
-                        best_of=5,
-                        patience=1,
-                        temperature=0,
-                        compression_ratio_threshold=2.4,
-                        no_speech_threshold=0.6,
-                        word_timestamps=False
-                    )
-                    text_parts = []
-                    for segment in segments:
-                        text_parts.append(segment.text)
-                    chunk_text = ' '.join(text_parts).strip()
-                    if i == 0 and info and info.language:
-                        detected_language = info.language
-                except Exception as e:
-                    logger.error(f"faster_whisper chunk transcription failed: {e}")
-                    chunk_text = ""
+                
+                def transcribe_fw_chunk():
+                    try:
+                        # For Ivrit models, use Hebrew as default only if it's an Ivrit model
+                        default_lang = None
+                        if model_name and "ivrit" in model_name.lower():
+                            # Ivrit models are Hebrew-optimized, default to Hebrew if no language specified
+                            default_lang = "he"
+                        
+                        segments, info = fw_model.transcribe(
+                            chunk_file,
+                            language=language or default_lang,  # None means auto-detect
+                            beam_size=5,
+                            best_of=5,
+                            patience=1,
+                            temperature=0,
+                            compression_ratio_threshold=2.4,
+                            no_speech_threshold=0.6,
+                            word_timestamps=False
+                        )
+                        text_parts = []
+                        for segment in segments:
+                            text_parts.append(segment.text)
+                        chunk_text = ' '.join(text_parts).strip()
+                        return chunk_text, info
+                    except Exception as e:
+                        logger.error(f"faster_whisper chunk transcription failed: {e}")
+                        return "", None
+                
+                # Run in executor (non-blocking)
+                chunk_text, info = await loop.run_in_executor(None, transcribe_fw_chunk)
+                
+                if i == 0 and info and info.language:
+                    detected_language = info.language
             
             elif model_config["type"] == "openai":
-                use_fp16 = torch.cuda.is_available()
-                try:
-                    result = model.transcribe(chunk_file, language=language, fp16=use_fp16, verbose=False)
-                except Exception:
-                    result = model.transcribe(chunk_file, language=language, fp16=False, verbose=False)
+                def transcribe_openai_chunk():
+                    use_fp16 = torch.cuda.is_available()
+                    try:
+                        result = model.transcribe(chunk_file, language=language, fp16=use_fp16, verbose=False)
+                    except Exception:
+                        result = model.transcribe(chunk_file, language=language, fp16=False, verbose=False)
+                    return result
+                
+                # Run in executor (non-blocking)
+                result = await loop.run_in_executor(None, transcribe_openai_chunk)
                 
                 chunk_text = result.get('text', '').strip()
                 if i == 0 and result.get('language'):
                     detected_language = result.get('language')
+            
+            else:
+                chunk_text = ""
             
 
             
@@ -1856,6 +1918,21 @@ async def transcribe_with_incremental_output(
             })
             
             logger.info(f"Processed chunk {i+1}/{total_chunks} in {chunk_duration:.1f}s (avg: {avg_time_per_chunk:.1f}s/chunk, ETA: {eta_seconds}s)")
+        
+        # Send final 100% completion message
+        final_elapsed = time.time() - start_time
+        await websocket.send_json({
+            "type": "transcription_progress",
+            "audio_duration": audio_duration,
+            "percentage": 100,
+            "eta_seconds": 0,
+            "speed": f"{final_elapsed/total_chunks:.1f}s/chunk",
+            "elapsed_seconds": int(final_elapsed),
+            "chunks_processed": total_chunks,
+            "total_chunks": total_chunks,
+            "message": f"Transcription complete! Processed {total_chunks} chunks in {int(final_elapsed)}s"
+        })
+        logger.info(f"Transcription complete: {total_chunks} chunks in {final_elapsed:.1f}s")
         
         # Cleanup chunk files
         try:
