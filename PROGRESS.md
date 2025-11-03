@@ -15,7 +15,7 @@ Phase 3: Cache ✅ COMPLETE
 Phase 4: Models ✅ COMPLETE
 Phase 5: Audio ✅ COMPLETE
 Phase 6: Transcription ✅ COMPLETE
-Phase 7: Diarization ⏳ NOT STARTED
+Phase 7: Diarization ✅ COMPLETE
 Phase 8: Video Metadata ⏳ NOT STARTED
 Phase 9: API Routes ⏳ NOT STARTED
 Phase 10: WebSocket ⏳ NOT STARTED
@@ -261,17 +261,29 @@ Notes:
 
 ---
 
-## Phase 7: Extract Diarization ⏳ NOT STARTED
+## Phase 7: Extract Diarization ✅ COMPLETE
 
-Target Files:
-  - services/diarization.py
+Completed: 2025-11-03
 
-Functions to Extract:
-  - transcribe_with_diarization (line 591)
+Files Created:
+  - services/diarization.py (241 lines)
 
-Status: Not started
-Files Created: None
-Commits: 0
+Functions Extracted:
+  - transcribe_with_diarization (line 603) - Complete with speaker identification
+
+Features Preserved:
+  - Speaker segment detection and labeling
+  - Hebrew speaker labels (דובר_1, דובר_2) for Ivrit models
+  - English speaker labels (SPEAKER_1, SPEAKER_2) for other models
+  - Alignment of transcription with speaker segments
+  - Fallback to regular transcription if diarization fails
+  - Progress reporting during transcription
+
+Commits: 1
+Notes:
+  - Diarization pipeline integration preserved
+  - Speaker overlap calculation maintained
+  - Incremental result sending intact
 
 ---
 
@@ -379,9 +391,9 @@ Commits: 0
 ## Summary Statistics
 
 Total Phases: 14 (0-13)
-Completed: 7
+Completed: 8
 In Progress: 0
-Not Started: 7
+Not Started: 6
 
 Total Files to Create: ~17 modules + 2 static files
 Estimated Final app.py Size: ~40-50 lines
