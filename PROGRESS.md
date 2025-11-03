@@ -8,7 +8,7 @@ Runtime Logs: .logs/
 ## Phase Status Overview
 
 Phase 0: Setup ✅ COMPLETE
-Phase 1A: Config ⏳ NOT STARTED
+Phase 1A: Config ✅ COMPLETE
 Phase 1B: State ⏳ NOT STARTED
 Phase 2: Utils ⏳ NOT STARTED
 Phase 3: Cache ⏳ NOT STARTED
@@ -51,19 +51,29 @@ Notes:
 
 ---
 
-## Phase 1A: Extract Configuration ⏳ NOT STARTED
+## Phase 1A: Extract Configuration ✅ COMPLETE
 
-Target Files:
-  - config/settings.py
-  - config/constants.py
+Completed: 2025-11-03
 
-Functions to Extract:
-  - All os.getenv() calls -> settings.py
-  - All UPPERCASE constants -> constants.py
+Files Created:
+  - config/settings.py (already existed - 50+ lines)
+  - config/constants.py (17 lines)
 
-Status: Not started
-Files Created: None
-Commits: 0
+Environment Variables Extracted:
+  - DEEPGRAM_API_KEY, WHISPER_MODEL, IVRIT_MODEL_NAME
+  - USE_PARALLEL_TRANSCRIPTION, PARALLEL_WORKERS
+  - YTDLP_CHUNK_SECONDS, YTDLP_CHUNK_OVERLAP
+  - AUDIO_CACHE_ENABLED, and others
+
+Constants Extracted:
+  - CACHE_DIR, DOWNLOAD_CACHE_DIR, CAPTURE_DIR
+  - SAMPLE_RATE, CHANNELS, CHUNK_DURATION
+  - CHUNK_OVERLAP, AUDIO_QUEUE_SIZE
+
+Commits: 1
+Notes:
+  - config/settings.py was pre-existing with all env vars
+  - Created config/constants.py with application constants
 
 ---
 
