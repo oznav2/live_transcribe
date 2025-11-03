@@ -13,7 +13,7 @@ Phase 1B: State ✅ COMPLETE
 Phase 2: Utils ✅ COMPLETE
 Phase 3: Cache ✅ COMPLETE
 Phase 4: Models ✅ COMPLETE
-Phase 5: Audio ⏳ NOT STARTED
+Phase 5: Audio ✅ COMPLETE
 Phase 6: Transcription ⏳ NOT STARTED
 Phase 7: Diarization ⏳ NOT STARTED
 Phase 8: Video Metadata ⏳ NOT STARTED
@@ -185,24 +185,38 @@ Notes:
 
 ---
 
-## Phase 5: Extract Audio Processing ⏳ NOT STARTED
+## Phase 5: Extract Audio Processing ✅ COMPLETE
 
-Target Files:
-  - services/audio_processor.py
+Completed: 2025-11-03
 
-Functions to Extract (ATOMIC MOVES):
-  - download_audio_with_ffmpeg (line 866) + nested helpers (lines 944, 960)
-  - download_with_fallback (line 1159)
-  - download_audio_with_ytdlp_async (line 1225)
+Risk Level: HIGH (Async functions, nested helpers, subprocess management)
+
+Files Created:
+  - services/audio_processor.py (670 lines)
+
+Functions Extracted:
+  - download_audio_with_ffmpeg (line 878) + nested monitor_progress
+  - download_with_fallback (line 1171)
+  - download_audio_with_ytdlp_async (line 1237)
   - get_audio_duration_seconds (line 1460)
   - calculate_progress_metrics (line 1483)
   - split_audio_for_incremental (line 1531)
   - split_audio_into_chunks (line 1578)
-  - AudioStreamProcessor class (lines 2220-2333) - COMPLETE CLASS
+  - AudioStreamProcessor class (lines 2229-2345) - COMPLETE CLASS
 
-Status: Not started
-Files Created: None
-Commits: 0
+Critical Patterns Preserved:
+  - Async subprocess management
+  - Nested helper functions intact
+  - AudioStreamProcessor class with all state
+  - FFmpeg process handling
+  - Queue management and backpressure
+
+Commits: 1
+Notes:
+  - All audio processing functions extracted
+  - AudioStreamProcessor class moved atomically
+  - Async patterns preserved
+  - Subprocess handling intact
 
 ---
 
