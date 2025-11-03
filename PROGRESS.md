@@ -18,7 +18,7 @@ Phase 6: Transcription ✅ COMPLETE
 Phase 7: Diarization ✅ COMPLETE
 Phase 8: Video Metadata ✅ COMPLETE
 Phase 9: API Routes ✅ COMPLETE
-Phase 10: WebSocket ⏳ NOT STARTED
+Phase 10: WebSocket ✅ COMPLETE
 Phase 11: Lifespan ⏳ NOT STARTED
 Phase 12: Static Files ⏳ NOT STARTED
 Phase 13: Docker Config ⏳ NOT STARTED
@@ -344,17 +344,39 @@ Notes:
 
 ---
 
-## Phase 10: Extract WebSocket Endpoint ⏳ NOT STARTED
+## Phase 10: Extract WebSocket Endpoint ✅ COMPLETE
 
-Target Files:
-  - api/websocket.py
+Completed: 2025-11-03
 
-Endpoint to Extract (CRITICAL - Complete workflow):
-  - websocket_transcribe (line 3074) + nested helper (line 3238)
+Risk Level: CRITICAL (Main transcription workflow)
 
-Status: Not started
-Files Created: None
-Commits: 0
+Files Created:
+  - api/websocket.py (344 lines)
+
+Functions Extracted:
+  - websocket_transcribe (line 3085) - Complete WebSocket transcription workflow
+
+Workflows Preserved:
+  - Deepgram VOD vs live stream routing
+  - 60-second capture mode with yt-dlp
+  - Parallel chunk transcription
+  - Speaker diarization integration
+  - Real-time streaming with FFmpeg
+  - Download with automatic fallback
+  - Capture management and cleanup
+
+Critical Patterns Maintained:
+  - WebSocket state management
+  - Threading for audio processing
+  - Progress reporting patterns
+  - Error handling and cleanup
+  - Cache-aware file management
+
+Commits: 1
+Notes:
+  - Complete transcription workflow preserved
+  - All routing logic intact
+  - Thread management preserved
 
 ---
 
@@ -413,9 +435,9 @@ Commits: 0
 ## Summary Statistics
 
 Total Phases: 14 (0-13)
-Completed: 10
+Completed: 11
 In Progress: 0
-Not Started: 4
+Not Started: 3
 
 Total Files to Create: ~17 modules + 2 static files
 Estimated Final app.py Size: ~40-50 lines
