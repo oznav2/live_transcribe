@@ -57,7 +57,12 @@ PORT: int = int(os.getenv('PORT', '8009'))
 DEVICE: str = 'cuda' if os.getenv('CUDA_VISIBLE_DEVICES') else 'cpu'
 COMPUTE_TYPE: str = 'float16' if DEVICE == 'cuda' else 'int8'
 
+# OpenAI API (for translation)
+OPENAI_API_KEY: str = sanitize_token(os.getenv('OPENAI_API_KEY', ''))
+OPENAI_BASE_URL: str = os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+
 # Service flags
 USE_DEEPGRAM: bool = bool(DEEPGRAM_API_KEY)
 GROQ_API_KEY: str = os.getenv('GROQ_API_KEY', '')
 USE_GROQ: bool = bool(GROQ_API_KEY)
+USE_OPENAI: bool = bool(OPENAI_API_KEY)

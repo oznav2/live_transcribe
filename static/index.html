@@ -173,6 +173,10 @@
                     <button id="downloadBtn" class="icon-btn" title="Download as text file">
                         <i class="fas fa-download"></i>
                     </button>
+                    <button id="translateBtn" class="icon-btn hidden" title="Translate text">
+                        <i class="fas fa-language"></i>
+                        <span id="translateBtnText" style="margin-left: 6px; font-size: 13px;">Translate</span>
+                    </button>
                 </div>
             </div>
 
@@ -257,6 +261,30 @@
                 </div>
             </div>
 
+            <!-- Translation Progress Panel -->
+            <div id="translationProgress" class="progress-panel hidden">
+                <div class="progress-header">
+                    <div class="progress-title">
+                        <i class="fas fa-language"></i>
+                        Translating Text
+                    </div>
+                    <div id="translationPercent" class="progress-percent">0%</div>
+                </div>
+                <div class="progress-bar-container">
+                    <div id="translationProgressBar" class="progress-bar-fill translation" style="width: 0%"></div>
+                </div>
+                <div class="progress-stats">
+                    <div class="progress-stat">
+                        <div class="progress-stat-label">Chunks</div>
+                        <div id="translationChunks" class="progress-stat-value">0 / 0</div>
+                    </div>
+                    <div class="progress-stat">
+                        <div class="progress-stat-label">Progress</div>
+                        <div id="translationStatus" class="progress-stat-value">Starting...</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Transcription Area -->
             <div class="transcription-header">
                 <div class="transcription-title">
@@ -270,6 +298,20 @@
                     <i class="fas fa-microphone"></i>
                     <div>Transcription will appear here...</div>
                     <div style="margin-top: 8px; font-size: 12px;">Enter a URL and click "Start Transcription"</div>
+                </div>
+            </div>
+
+            <!-- Translation Area (hidden by default) -->
+            <div id="translationSection" class="hidden" style="margin-top: 24px;">
+                <div class="transcription-header">
+                    <div class="transcription-title">
+                        <i class="fas fa-language"></i>
+                        Translation
+                    </div>
+                    <div id="translationLanguages" class="word-count" style="font-size: 12px;"></div>
+                </div>
+                <div id="translationBox" class="transcription-area" style="background: #f0f4f8; border: 2px solid #3b82f6;">
+                    <div id="translationContent" style="white-space: pre-wrap; color: #1e293b; padding: 16px; min-height: 100px; font-size: 15px;"></div>
                 </div>
             </div>
 
@@ -299,10 +341,19 @@
         const clearBtn = document.getElementById('clearBtn');
         const copyBtn = document.getElementById('copyBtn');
         const downloadBtn = document.getElementById('downloadBtn');
+        const translateBtn = document.getElementById('translateBtn');
+        const translateBtnText = document.getElementById('translateBtnText');
         const statusDot = document.getElementById('statusDot');
         const statusText = document.getElementById('statusText');
         const transcriptionBox = document.getElementById('transcriptionBox');
         const wordCount = document.getElementById('wordCount');
+        const translationSection = document.getElementById('translationSection');
+        const translationContent = document.getElementById('translationContent');
+        const translationLanguages = document.getElementById('translationLanguages');
+
+        // Translation state
+        let detectedLanguage = null;
+        let currentUrl = null;
 
         function useSampleUrl(url) {
             urlInput.value = url;
@@ -362,6 +413,177 @@
             } else {
                 transcriptionBox.classList.remove('rtl');
                 console.log('Switched to LTR (default) mode');
+            }
+        }
+
+        // Translation Functions
+        function getTranslateButtonText(language) {
+            // Determine button text based on source language
+            const langLower = (language || '').toLowerCase();
+            const isHebrew = langLower.includes('he') || langLower.includes('iw') || langLower.includes('hebrew');
+
+            if (isHebrew) {
+                return 'Translate to English';
+            } else {
+                return 'תרגם לעברית';
+            }
+        }
+
+        function showTranslateButton(language) {
+            if (language && transcriptionText.trim()) {
+                translateBtnText.textContent = getTranslateButtonText(language);
+                translateBtn.classList.remove('hidden');
+            }
+        }
+
+        function hideTranslateButton() {
+            translateBtn.classList.add('hidden');
+        }
+
+        async function performTranslation() {
+            if (!transcriptionText.trim()) {
+                alert('No transcription text to translate');
+                return;
+            }
+
+            if (!detectedLanguage) {
+                alert('Language not detected. Cannot translate.');
+                return;
+            }
+
+            // Disable button and show loading state
+            translateBtn.disabled = true;
+            const originalText = translateBtnText.textContent;
+            translateBtnText.textContent = 'Translating...';
+
+            // Show translation progress panel
+            const translationProgressPanel = document.getElementById('translationProgress');
+            const translationPercentEl = document.getElementById('translationPercent');
+            const translationProgressBar = document.getElementById('translationProgressBar');
+            const translationChunksEl = document.getElementById('translationChunks');
+            const translationStatusEl = document.getElementById('translationStatus');
+
+            translationProgressPanel.classList.remove('hidden');
+            translationProgressPanel.classList.add('active');
+
+            // Clear previous translation
+            translationContent.textContent = '';
+            let accumulatedTranslation = [];
+
+            try {
+                // Create WebSocket connection for streaming translation
+                const wsUrl = `ws://${window.location.host}/ws/translate`;
+                const translationWs = new WebSocket(wsUrl);
+
+                translationWs.onopen = () => {
+                    console.log('Translation WebSocket connected');
+                    updateStatus('active', 'Starting translation...');
+
+                    // Send translation request
+                    translationWs.send(JSON.stringify({
+                        text: transcriptionText,
+                        language: detectedLanguage,
+                        url: currentUrl,
+                        video_title: currentVideoInfo ? currentVideoInfo.title : null
+                    }));
+                };
+
+                translationWs.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+
+                    if (data.type === 'status') {
+                        updateStatus('active', data.message);
+                        translationStatusEl.textContent = data.message;
+                    } else if (data.type === 'translation_chunk') {
+                        // Update progress
+                        const progress = data.progress || 0;
+                        translationPercentEl.textContent = `${progress.toFixed(0)}%`;
+                        translationProgressBar.style.width = `${progress}%`;
+                        translationChunksEl.textContent = `${data.chunk_index + 1} / ${data.total_chunks}`;
+                        translationStatusEl.textContent = `Translating chunk ${data.chunk_index + 1}...`;
+
+                        // Accumulate translated text
+                        if (data.text) {
+                            accumulatedTranslation.push(data.text);
+                            // Show accumulated translation in real-time
+                            translationContent.textContent = accumulatedTranslation.join(' ');
+                        }
+
+                        updateStatus('active', `Translating: ${progress.toFixed(0)}%`);
+                    } else if (data.type === 'complete') {
+                        // Translation complete
+                        translationLanguages.textContent = `${data.source_language} → ${data.target_language_name}`;
+
+                        // Set RTL if target is Hebrew
+                        const translationBox = document.getElementById('translationBox');
+                        if (data.target_language === 'he') {
+                            translationBox.classList.add('rtl');
+                        } else {
+                            translationBox.classList.remove('rtl');
+                        }
+
+                        // Hide progress panel
+                        setTimeout(() => {
+                            translationProgressPanel.classList.remove('active');
+                            translationProgressPanel.classList.add('hidden');
+                        }, 1000);
+
+                        // Show translation section
+                        translationSection.classList.remove('hidden');
+                        updateStatus('idle', 'Translation complete');
+
+                        // Re-enable button
+                        translateBtn.disabled = false;
+                        translateBtnText.textContent = originalText;
+
+                        // Close WebSocket
+                        translationWs.close();
+                    } else if (data.error) {
+                        alert(`Translation error: ${data.error}`);
+                        updateStatus('error', `Translation error: ${data.error}`);
+
+                        // Hide progress panel
+                        translationProgressPanel.classList.remove('active');
+                        translationProgressPanel.classList.add('hidden');
+
+                        // Re-enable button
+                        translateBtn.disabled = false;
+                        translateBtnText.textContent = originalText;
+
+                        translationWs.close();
+                    }
+                };
+
+                translationWs.onerror = (error) => {
+                    console.error('Translation WebSocket error:', error);
+                    updateStatus('error', 'Translation connection error');
+                    alert('Translation connection error. Please try again.');
+
+                    // Hide progress panel
+                    translationProgressPanel.classList.remove('active');
+                    translationProgressPanel.classList.add('hidden');
+
+                    // Re-enable button
+                    translateBtn.disabled = false;
+                    translateBtnText.textContent = originalText;
+                };
+
+                translationWs.onclose = () => {
+                    console.log('Translation WebSocket closed');
+                };
+
+            } catch (error) {
+                console.error('Translation error:', error);
+                alert(`Translation error: ${error.message}`);
+                updateStatus('error', `Translation error: ${error.message}`);
+
+                // Hide progress panel
+                translationProgressPanel.classList.remove('active');
+                translationProgressPanel.classList.add('hidden');
+
+                // Re-enable button
+                translateBtn.disabled = false;
+                translateBtnText.textContent = originalText;
             }
         }
 
@@ -835,6 +1057,20 @@
                     updateStage(2, 'completed');
                     updateStage(3, 'completed');
 
+                    // Capture detected language and URL for translation
+                    if (data.detected_language) {
+                        detectedLanguage = data.detected_language;
+                        console.log('Detected language:', detectedLanguage);
+                    }
+                    if (data.url) {
+                        currentUrl = data.url;
+                    }
+
+                    // Show translate button if language detected and text available
+                    if (detectedLanguage && transcriptionText.trim()) {
+                        showTranslateButton(detectedLanguage);
+                    }
+
                     setTimeout(() => {
                         hideStageIndicator();
                     }, 2000);
@@ -899,6 +1135,12 @@
             resetProgressPanels();
             // Reset to LTR when clearing
             setTranscriptionDirection(false);
+            // Hide translation button and section
+            hideTranslateButton();
+            translationSection.classList.add('hidden');
+            translationContent.textContent = '';
+            detectedLanguage = null;
+            currentUrl = null;
         }
 
         function copyToClipboard() {
@@ -957,6 +1199,7 @@
         clearBtn.addEventListener('click', clearTranscription);
         copyBtn.addEventListener('click', copyToClipboard);
         downloadBtn.addEventListener('click', downloadTranscription);
+        translateBtn.addEventListener('click', performTranslation);
 
         urlInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !startBtn.classList.contains('hidden')) {

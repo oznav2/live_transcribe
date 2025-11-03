@@ -243,7 +243,12 @@ async def websocket_transcribe(websocket: WebSocket):
 
                             if text:
                                 await websocket.send_json({"type": "transcription", "text": text, "language": det_lang})
-                            await websocket.send_json({"type": "complete", "message": "Transcription complete"})
+                            await websocket.send_json({
+                                "type": "complete",
+                                "message": "Transcription complete",
+                                "detected_language": det_lang,
+                                "url": url
+                            })
                         finally:
                             try:
                                 if os.path.exists(info["path"]):
@@ -301,15 +306,22 @@ async def websocket_transcribe(websocket: WebSocket):
                                 logger.error(f"Parallel transcription worker failed: {e}")
 
                     # Order results by index and stream partials to client
+                    detected_language = language or "unknown"
                     for idx, text, det_lang in sorted(results, key=lambda r: r[0]):
                         if text:
+                            detected_language = det_lang  # Keep track of detected language
                             await websocket.send_json({
                                 "type": "transcription",
                                 "text": text,
                                 "language": det_lang
                             })
 
-                    await websocket.send_json({"type": "complete", "message": "Transcription complete"})
+                    await websocket.send_json({
+                        "type": "complete",
+                        "message": "Transcription complete",
+                        "detected_language": detected_language,
+                        "url": url
+                    })
 
                 finally:
                     # Cleanup chunk directory and original file
@@ -349,7 +361,12 @@ async def websocket_transcribe(websocket: WebSocket):
                     )
 
                     # Send complete message
-                    await websocket.send_json({"type": "complete", "message": "Transcription complete"})
+                    await websocket.send_json({
+                        "type": "complete",
+                        "message": "Transcription complete",
+                        "detected_language": detected_language,
+                        "url": url
+                    })
 
             finally:
                 # Cleanup downloaded file (only if not in cache)
@@ -397,3 +414,106 @@ async def websocket_transcribe(websocket: WebSocket):
             processor.stop()
         if audio_thread and audio_thread.is_alive():
             audio_thread.join(timeout=5)
+
+
+async def websocket_translate(websocket: WebSocket):
+    """WebSocket endpoint for streaming translation with progress updates"""
+    await websocket.accept()
+
+    try:
+        # Import translation service
+        from services.translation import translate_text_chunked
+        from utils.translation_cache import save_transcription_to_file, save_translation_to_file
+
+        # Receive translation request
+        data = await websocket.receive_json()
+        text = data.get("text")
+        language = data.get("language")
+        url = data.get("url")
+        video_title = data.get("video_title")
+
+        if not text or not language:
+            await websocket.send_json({"error": "Text and language are required"})
+            return
+
+        logger.info(f"Starting chunked translation: {language} → auto-detect, {len(text)} chars")
+
+        # Notify client that translation is starting
+        await websocket.send_json({
+            "type": "status",
+            "message": "Starting translation..."
+        })
+
+        # Save original transcription to file
+        if url:
+            save_transcription_to_file(url=url, transcription_text=text, language=language)
+
+        # Translate text in chunks with progress updates
+        full_translation = []
+        target_lang_code = None
+        target_lang_name = None
+
+        async for translated_chunk, chunk_idx, total_chunks, tgt_code, tgt_name in translate_text_chunked(
+            text=text,
+            source_language=language,
+            video_title=video_title,
+            model="gpt-4o-mini",  # Much faster than gpt-4 (2-3 seconds per chunk vs 13-15 seconds)
+            chunk_size=150  # Larger chunks work well with faster model
+        ):
+            # Store target language info from first chunk
+            if target_lang_code is None:
+                target_lang_code = tgt_code
+                target_lang_name = tgt_name
+
+            # Accumulate translation
+            if translated_chunk:
+                full_translation.append(translated_chunk)
+
+            # Calculate progress percentage
+            progress_pct = ((chunk_idx + 1) / total_chunks) * 100
+
+            # Send progress update with translated chunk
+            await websocket.send_json({
+                "type": "translation_chunk",
+                "text": translated_chunk,
+                "chunk_index": chunk_idx,
+                "total_chunks": total_chunks,
+                "progress": progress_pct,
+                "target_language": target_lang_code,
+                "target_language_name": target_lang_name
+            })
+
+            logger.debug(f"Translation progress: {chunk_idx+1}/{total_chunks} ({progress_pct:.1f}%)")
+
+        # Combine all translated chunks
+        final_translation = " ".join(full_translation)
+
+        # Save translation to file
+        if url and final_translation:
+            save_translation_to_file(
+                url=url,
+                translation_text=final_translation,
+                source_language=language,
+                target_language=target_lang_code
+            )
+
+        # Send completion message
+        await websocket.send_json({
+            "type": "complete",
+            "message": "Translation complete",
+            "translation": final_translation,
+            "source_language": language,
+            "target_language": target_lang_code,
+            "target_language_name": target_lang_name
+        })
+
+        logger.info(f"Translation completed: {len(final_translation)} chars")
+
+    except WebSocketDisconnect:
+        logger.info("Client disconnected during translation")
+    except Exception as e:
+        logger.error(f"Translation WebSocket error: {e}", exc_info=True)
+        try:
+            await websocket.send_json({"error": str(e)})
+        except:
+            pass

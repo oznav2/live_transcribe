@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from config.settings import PORT
 from core.lifespan import lifespan
 from api.routes import router as api_router
-from api.websocket import websocket_transcribe
+from api.websocket import websocket_transcribe, websocket_translate
 
 # Configure logging
 logging.basicConfig(
@@ -31,8 +31,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Mount API routes
 app.include_router(api_router)
 
-# Register WebSocket endpoint
+# Register WebSocket endpoints
 app.add_websocket_route("/ws/transcribe", websocket_transcribe)
+app.add_websocket_route("/ws/translate", websocket_translate)
 
 if __name__ == "__main__":
     # Create static directory if it doesn't exist

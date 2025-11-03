@@ -1713,7 +1713,25 @@
       "lastAccessed": "2025-11-03T14:00:35.945Z",
       "lastVerified": "2025-11-03T14:00:35.945Z",
       "status": "fresh"
+    },
+    {
+      "id": "mem_1762206869956_tspmu5zml",
+      "content": "Translation Feature Research Complete for Deepgram Transcription App:\n\nFRONTEND (static/index.html):\n- Lines 168-177: Status bar with action buttons (clear, copy, download)\n- Lines 173-175: Download button uses .icon-btn class with fa-download icon\n- Lines 260-274: Transcription area where results appear\n- Lines 829-842: Complete event handler - sends \"complete\" message type, hides progress, resets UI\n- Lines 725-849: WebSocket message handlers for various types (status, download_progress, transcription_chunk, complete, etc.)\n- Lines 715-723: Initial WebSocket send includes {url, language, model, captureMode, diarization}\n\nBACKEND WEBSOCKET (api/websocket.py):\n- Lines 52-399: Main websocket_transcribe function\n- Lines 243-246: Sends transcription with detected_language in message\n- Lines 246, 312, 352: Sends \"complete\" message type when transcription finishes\n- Lines 337-342: Diarization returns detected_language\n- Lines 347-352: Regular transcription returns detected_language\n\nLANGUAGE DETECTION (services/transcription.py):\n- Lines 90-452: transcribe_with_incremental_output returns (transcript, detected_language)\n- Line 197, 228, 266, 341: Sets detected_language from model results\n- Lines 733-748, 837-852: Deepgram uses detect_language=True for auto-detection\n- Lines 858-874: Deepgram response includes detected_language in alternative object\n\nFILE CACHING (utils/cache.py):\n- DOWNLOAD_CACHE_DIR: /home/ilan/deepgram/cache/downloads\n- Lines 45-72: get_cached_download(url) - checks for cached downloads\n- Lines 75-107: save_download_to_cache(url, audio_file) - saves downloads\n\nAPI ENDPOINTS (api/routes.py):\n- Lines 1-247: Shows existing endpoint patterns\n- No OpenAI integration exists yet\n- Pattern: async def endpoint_name() with @router.post() decorator\n\nCONFIG (config/settings.py):\n- No OPENAI_API_KEY defined currently\n- Uses sanitize_token() for API keys (line 21)\n- Pattern: KEY = os.getenv('KEY_NAME', 'default')\n\nCACHE STRUCTURE:\n- CACHE_DIR: For normalized audio chunks\n- DOWNLOAD_CACHE_DIR: For full downloaded files (24hr retention)\n- CAPTURE_DIR: For temporary captured audio segments\n\nUI BUTTON PATTERNS:\n- .icon-btn class for icon-only buttons (download, copy, clear)\n- .btn .btn-primary for main action buttons\n- .btn .btn-secondary for secondary actions\n- Status bar (lines 190-198 in styles.css) contains action buttons on right side\n",
+      "type": "config",
+      "tags": [
+        "config",
+        "api",
+        "translation-feature",
+        "frontend-structure",
+        "backend-api",
+        "language-detection"
+      ],
+      "timestamp": "2025-11-03T21:54:29.955Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-11-03T21:54:29.955Z",
+      "lastVerified": "2025-11-03T21:54:29.955Z",
+      "status": "fresh"
     }
   ],
-  "lastUpdated": "2025-11-03T14:00:35.945Z"
+  "lastUpdated": "2025-11-03T21:54:29.955Z"
 }

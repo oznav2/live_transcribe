@@ -14,10 +14,13 @@ from config.constants import (
 )
 from config.constants import CACHE_ENABLED
 from config.availability import MODEL_SIZE
+from config.settings import USE_OPENAI
 from core.state import cached_index_html, URL_DOWNLOADS, current_model, current_model_name
 from utils.validators import is_youtube_url
 from utils.helpers import format_duration, format_view_count
 from services.video_metadata import get_youtube_metadata
+from services.translation import translate_text, get_translation_button_text
+from utils.translation_cache import save_transcription_to_file, save_translation_to_file
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,13 @@ class TranscriptionRequest(BaseModel):
 
 class VideoInfoRequest(BaseModel):
     url: str
+
+
+class TranslationRequest(BaseModel):
+    text: str
+    language: str
+    url: Optional[str] = None
+    video_title: Optional[str] = None
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -229,19 +239,97 @@ async def clear_download_cache():
     try:
         deleted_count = 0
         deleted_size = 0
-        
+
         for cache_file in DOWNLOAD_CACHE_DIR.glob("*.wav"):
             deleted_size += cache_file.stat().st_size
             cache_file.unlink()
             deleted_count += 1
-        
+
         # Clear in-memory cache
         URL_DOWNLOADS.clear()
-        
+
         return {
-            "success": True, 
+            "success": True,
             "deleted_files": deleted_count,
             "freed_space_mb": round(deleted_size / (1024 * 1024), 2)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/translate")
+async def translate_transcription(request: TranslationRequest):
+    """
+    Translate transcribed text using OpenAI GPT-4/5.
+
+    Returns JSON with translation result or error.
+    """
+    try:
+        # Check if OpenAI is configured
+        if not USE_OPENAI:
+            return {
+                "success": False,
+                "error": "Translation service not configured. Please set OPENAI_API_KEY in your .env file."
+            }
+
+        # Validate input
+        if not request.text or not request.text.strip():
+            return {
+                "success": False,
+                "error": "No text provided for translation"
+            }
+
+        if not request.language:
+            return {
+                "success": False,
+                "error": "Source language not specified"
+            }
+
+        logger.info(f"Translation request: {request.language} → auto-detect target")
+
+        # Save original transcription to cache if URL provided
+        if request.url:
+            save_transcription_to_file(
+                url=request.url,
+                transcription_text=request.text,
+                language=request.language
+            )
+
+        # Perform translation
+        translated_text, target_lang_code, target_lang_name = await translate_text(
+            text=request.text,
+            source_language=request.language,
+            video_title=request.video_title,
+            model="gpt-4"  # Use GPT-4 for high-quality translations
+        )
+
+        if not translated_text:
+            return {
+                "success": False,
+                "error": "Translation failed. Please check logs for details."
+            }
+
+        # Save translation to cache if URL provided
+        if request.url:
+            save_translation_to_file(
+                url=request.url,
+                translation_text=translated_text,
+                source_language=request.language,
+                target_language=target_lang_code
+            )
+
+        # Return successful translation
+        return {
+            "success": True,
+            "translation": translated_text,
+            "source_language": request.language,
+            "target_language": target_lang_code,
+            "target_language_name": target_lang_name
+        }
+
+    except Exception as e:
+        logger.error(f"Error in translation endpoint: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": f"Internal server error: {str(e)}"
+        }

@@ -20,6 +20,9 @@ yt-dlp==2024.10.7
 # Deepgram SDK (pinned to match working local version)
 deepgram-sdk==5.2.0
 
+# OpenAI SDK (for translation feature)
+openai>=1.50.0
+
 # Utilities
 python-dotenv==1.0.0
 aiofiles==23.2.1
