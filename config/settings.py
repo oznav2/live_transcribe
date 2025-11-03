@@ -49,8 +49,8 @@ DEEPGRAM_TRANSCRIPT_ONLY: bool = parse_bool(
 DEEPGRAM_MODEL: str = os.getenv('DEEPGRAM_MODEL', 'nova-3')
 DEEPGRAM_LANGUAGE: str = os.getenv('DEEPGRAM_LANGUAGE', 'en-US')
 
-# Server port
-PORT: int = int(os.getenv('PORT', '8000'))
+# Server port (default 8009 to match docker-compose.ivrit.yml)
+PORT: int = int(os.getenv('PORT', '8009'))
 
 # Device configuration (for compatibility)
 DEVICE: str = 'cuda' if os.getenv('CUDA_VISIBLE_DEVICES') else 'cpu'
