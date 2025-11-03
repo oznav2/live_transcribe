@@ -9,7 +9,7 @@ Runtime Logs: .logs/
 
 Phase 0: Setup ✅ COMPLETE
 Phase 1A: Config ✅ COMPLETE
-Phase 1B: State ⏳ NOT STARTED
+Phase 1B: State ✅ COMPLETE
 Phase 2: Utils ⏳ NOT STARTED
 Phase 3: Cache ⏳ NOT STARTED
 Phase 4: Models ⏳ NOT STARTED
@@ -77,19 +77,25 @@ Notes:
 
 ---
 
-## Phase 1B: Create Global State ⏳ NOT STARTED
+## Phase 1B: Create Global State ✅ COMPLETE
 
-Target Files:
-  - core/state.py
+Completed: 2025-11-03
 
-Globals to Extract:
-  - whisper_models, faster_whisper_models, diarization_pipeline
-  - model_lock, faster_whisper_lock, diarization_lock
-  - executor, cached_index_html, CAPTURES
+Files Created:
+  - core/state.py (30 lines)
 
-Status: Not started
-Files Created: None
-Commits: 0
+Global Variables Centralized:
+  - whisper_models, diarization_pipeline
+  - model_lock, diarization_pipeline_lock
+  - executor (ThreadPoolExecutor - initialized at runtime)
+  - cached_index_html
+  - CAPTURES, URL_DOWNLOADS
+
+Commits: 1
+Notes:
+  - Global state centralized for single source of truth
+  - Thread safety locks preserved
+  - No separate faster_whisper_models found in original
 
 ---
 
