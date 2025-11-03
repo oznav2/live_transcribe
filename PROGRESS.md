@@ -17,7 +17,7 @@ Phase 5: Audio ✅ COMPLETE
 Phase 6: Transcription ✅ COMPLETE
 Phase 7: Diarization ✅ COMPLETE
 Phase 8: Video Metadata ✅ COMPLETE
-Phase 9: API Routes ⏳ NOT STARTED
+Phase 9: API Routes ✅ COMPLETE
 Phase 10: WebSocket ⏳ NOT STARTED
 Phase 11: Lifespan ⏳ NOT STARTED
 Phase 12: Static Files ⏳ NOT STARTED
@@ -312,24 +312,35 @@ Notes:
 
 ---
 
-## Phase 9: Extract API Routes ⏳ NOT STARTED
+## Phase 9: Extract API Routes ✅ COMPLETE
 
-Target Files:
-  - api/routes.py
+Completed: 2025-11-03
 
-Endpoints to Extract (Convert @app to @router):
-  - get_home (line 3068) [GET /]
-  - health_check (line 3419) [GET /health]
-  - get_video_info (line 3429) [POST /api/video-info]
-  - gpu_diagnostics (line 3485) [GET /gpu]
-  - cache_stats (line 3518) [GET /api/cache/stats]
-  - clear_cache (line 3538) [POST /api/cache/clear]
-  - download_cache_stats (line 3555) [GET /api/download-cache/stats]
-  - clear_download_cache (line 3584) [POST /api/download-cache/clear]
+Files Created:
+  - api/routes.py (220 lines)
 
-Status: Not started
-Files Created: None
-Commits: 0
+Files Updated:
+  - core/state.py (added current_model, current_model_name)
+
+Endpoints Extracted (Converted @app to @router):
+  - get_home (line 3079) [GET /]
+  - health_check (line 3430) [GET /health]
+  - get_video_info (line 3440) [POST /api/video-info]
+  - gpu_diagnostics (line 3496) [GET /gpu]
+  - cache_stats (line 3529) [GET /api/cache/stats]
+  - clear_cache (line 3549) [POST /api/cache/clear]
+  - download_cache_stats (line 3566) [GET /api/download-cache/stats]
+  - clear_download_cache (line 3595) [POST /api/download-cache/clear]
+
+Request Models Extracted:
+  - TranscriptionRequest (for future use)
+  - VideoInfoRequest
+
+Commits: 1
+Notes:
+  - Created APIRouter instance for all routes
+  - Preserved all endpoint logic exactly
+  - Added model tracking to state.py
 
 ---
 
@@ -402,9 +413,9 @@ Commits: 0
 ## Summary Statistics
 
 Total Phases: 14 (0-13)
-Completed: 9
+Completed: 10
 In Progress: 0
-Not Started: 5
+Not Started: 4
 
 Total Files to Create: ~17 modules + 2 static files
 Estimated Final app.py Size: ~40-50 lines

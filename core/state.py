@@ -28,3 +28,7 @@ CAPTURES: Dict[str, Any] = {}
 
 # URL Downloads tracking - Maps URL hash to downloaded file path
 URL_DOWNLOADS: Dict[str, Any] = {}
+
+# Current model tracking
+current_model: Optional[Any] = None
+current_model_name: Optional[str] = None
