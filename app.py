@@ -43,6 +43,23 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from uuid import uuid4
+from config.settings import (
+	DEEPGRAM_API_KEY,
+	WHISPER_MODEL,
+	USE_PARALLEL_TRANSCRIPTION,
+	PARALLEL_WORKERS,
+	YTDLP_CHUNK_SECONDS,
+	YTDLP_CHUNK_OVERLAP,
+	AUDIO_CACHE_ENABLED,
+	IVRIT_MODEL_NAME,
+	IVRIT_DEVICE,
+	IVRIT_COMPUTE_TYPE,
+	DEEPGRAM_TIME_LIMIT,
+	DEEPGRAM_TRANSCRIPT_ONLY,
+	DEEPGRAM_MODEL,
+	DEEPGRAM_LANGUAGE,
+	PORT,
+)
 
 # Primary: Import faster_whisper for Ivrit CT2 models (recommended)
 try:
@@ -94,10 +111,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, HttpUrl
 import uvicorn
 
-# Deepgram configuration
-from dotenv import load_dotenv
-load_dotenv()  # Load environment variables from .env file
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+# Deepgram configuration (env loaded via config.settings)
+from config.settings import DEEPGRAM_API_KEY
 try:
     from deepgram import DeepgramClient
     # Map events for Deepgram SDK v3/v4
@@ -261,7 +276,7 @@ async def safe_ws_send(websocket: WebSocket, data: dict) -> bool:
         return False
 
 # Default model configuration - always use ivrit-ct2 with faster_whisper
-MODEL_SIZE = os.getenv("WHISPER_MODEL", "whisper-v3-turbo")  # Default to multilingual model
+MODEL_SIZE = WHISPER_MODEL  # Default to multilingual model
 logger.info(f"Default model: {MODEL_SIZE} (using faster_whisper with CT2 format)")
 
 # Model configurations
@@ -273,9 +288,9 @@ if FASTER_WHISPER_AVAILABLE:
         # Primary Ivrit model - best for Hebrew
         "ivrit-ct2": {
             "type": "faster_whisper",
-            "name": os.getenv("IVRIT_MODEL_NAME", "ivrit-ai/whisper-large-v3-turbo-ct2"),
-            "device": os.getenv("IVRIT_DEVICE", "cuda" if torch.cuda.is_available() else "cpu"),
-            "compute_type": os.getenv("IVRIT_COMPUTE_TYPE", "float16" if torch.cuda.is_available() else "int8")
+            "name": IVRIT_MODEL_NAME,
+            "device": IVRIT_DEVICE or ("cuda" if torch.cuda.is_available() else "cpu"),
+            "compute_type": IVRIT_COMPUTE_TYPE or ("float16" if torch.cuda.is_available() else "int8"),
         },
         # Alternative name for the same model
         "ivrit-v3-turbo": {
@@ -338,15 +353,12 @@ CHANNELS = 1  # Mono audio
 AUDIO_QUEUE_SIZE = 200  # Large queue to handle slow models (Ivrit, large models)
 
 # Feature flags for optional parallel chunking on yt-dlp downloads
-USE_PARALLEL_TRANSCRIPTION = os.getenv("USE_PARALLEL_TRANSCRIPTION", "false").lower() == "true"
-PARALLEL_WORKERS = int(os.getenv("PARALLEL_WORKERS", "2"))
-YTDLP_CHUNK_SECONDS = int(os.getenv("YTDLP_CHUNK_SECONDS", str(CHUNK_DURATION)))
-YTDLP_CHUNK_OVERLAP = int(os.getenv("YTDLP_CHUNK_OVERLAP", str(CHUNK_OVERLAP)))
+# Values loaded from config.settings
 
 # Audio caching configuration
 CACHE_DIR = Path("cache/audio")
 CACHE_MAX_AGE_HOURS = 24  # Clean cache older than 24 hours
-CACHE_ENABLED = os.getenv("AUDIO_CACHE_ENABLED", "true").lower() == "true"
+CACHE_ENABLED = AUDIO_CACHE_ENABLED
 
 # Capture configuration for first-60s feature
 CAPTURE_DIR = Path("cache/captures")
@@ -2821,13 +2833,13 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
         client = DeepgramClient(api_key=DEEPGRAM_API_KEY) if DEEPGRAM_API_KEY else DeepgramClient()
         # Apply user-requested params
         # TIME_LIMIT: Set to 0 or negative for unlimited streaming, or positive number for time limit in seconds
-        TIME_LIMIT = int(os.getenv("DEEPGRAM_TIME_LIMIT", "3600"))
-        TRANSCRIPT_ONLY = os.getenv("DEEPGRAM_TRANSCRIPT_ONLY", "true").lower() == "true"
+        TIME_LIMIT = DEEPGRAM_TIME_LIMIT
+        TRANSCRIPT_ONLY = DEEPGRAM_TRANSCRIPT_ONLY
         PARAMS = {
             "punctuate": True,
             "numerals": True,
-            "model": os.getenv("DEEPGRAM_MODEL", "nova-3"),
-            "language": os.getenv("DEEPGRAM_LANGUAGE", "en-US")
+            "model": DEEPGRAM_MODEL,
+            "language": DEEPGRAM_LANGUAGE,
         }
 
         # Create a websocket client (SDK v4)
@@ -3609,7 +3621,7 @@ if __name__ == "__main__":
     Path("static").mkdir(exist_ok=True)
     
     # Run the server
-    port = int(os.getenv("PORT", 8000))
+    port = PORT
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
