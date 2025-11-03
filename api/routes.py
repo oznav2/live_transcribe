@@ -37,6 +37,15 @@ class VideoInfoRequest(BaseModel):
 @router.get("/", response_class=HTMLResponse)
 async def get_home():
     """Serve the main web interface (cached at startup)"""
+    if cached_index_html is None:
+        # Fallback - try to load it directly
+        try:
+            with open("static/index.html", "r", encoding="utf-8") as f:
+                content = f.read()
+                return HTMLResponse(content=content)
+        except Exception as e:
+            logger.error(f"Failed to load index.html: {e}")
+            return HTMLResponse(content=f"<html><body><h1>Error loading UI: {e}</h1></body></html>")
     return HTMLResponse(content=cached_index_html)
 
 

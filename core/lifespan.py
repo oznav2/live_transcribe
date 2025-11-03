@@ -1,6 +1,7 @@
 """Application lifespan management for startup and shutdown."""
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
@@ -72,14 +73,21 @@ async def lifespan(app: FastAPI):
         
         # Load and cache index.html to avoid blocking I/O on every request
         try:
-            with open("static/index.html", "r", encoding="utf-8") as f:
+            index_path = Path("static/index.html")
+            if not index_path.exists():
+                logger.error(f"index.html not found at {index_path.absolute()}")
                 import core.state
-                core.state.cached_index_html = f.read()
-            logger.info("✓ Cached index.html for fast serving")
+                core.state.cached_index_html = None
+            else:
+                with open(index_path, "r", encoding="utf-8") as f:
+                    import core.state
+                    content = f.read()
+                    core.state.cached_index_html = content
+                    logger.info(f"✓ Cached index.html ({len(content)} bytes) for fast serving")
         except Exception as e:
             logger.error(f"Failed to cache index.html: {e}")
             import core.state
-            core.state.cached_index_html = "<html><body><h1>Error loading UI</h1></body></html>"
+            core.state.cached_index_html = None
     except Exception as e:
         logger.error(f"Critical startup error: {e}")
         # Don't raise - allow the app to start even without models
