@@ -422,12 +422,66 @@ async def download_audio_with_ytdlp_async(url: str, language: Optional[str] = No
         )
         
         # Process output for progress updates
+        last_progress_time = 0
         while True:
             line = await process.stdout.readline()
             if not line:
                 break
-            # Log but simplify progress handling
             line_str = line.decode('utf-8').strip()
+            
+            # Parse yt-dlp progress output
+            if websocket and '[download]' in line_str:
+                try:
+                    # Parse percentage (e.g., "[download]  45.2% of 123.45MiB at 2.34MiB/s ETA 00:45")
+                    if '%' in line_str:
+                        parts = line_str.split()
+                        for i, part in enumerate(parts):
+                            if '%' in part:
+                                percent = float(part.replace('%', ''))
+                                
+                                # Parse size if available
+                                size_mb = 0
+                                if 'of' in parts and i+1 < len(parts)-1:
+                                    size_str = parts[parts.index('of') + 1]
+                                    if 'MiB' in size_str or 'MB' in size_str:
+                                        size_mb = float(size_str.replace('MiB', '').replace('MB', ''))
+                                
+                                # Parse speed if available
+                                speed_mbps = 0
+                                for j, p in enumerate(parts):
+                                    if 'MiB/s' in p or 'MB/s' in p:
+                                        speed_mbps = float(p.replace('MiB/s', '').replace('MB/s', ''))
+                                        break
+                                
+                                # Parse ETA if available
+                                eta_seconds = 0
+                                if 'ETA' in parts:
+                                    eta_idx = parts.index('ETA') + 1
+                                    if eta_idx < len(parts):
+                                        eta_str = parts[eta_idx]
+                                        if ':' in eta_str:
+                                            time_parts = eta_str.split(':')
+                                            if len(time_parts) == 2:
+                                                eta_seconds = int(time_parts[0]) * 60 + int(time_parts[1])
+                                            elif len(time_parts) == 3:
+                                                eta_seconds = int(time_parts[0]) * 3600 + int(time_parts[1]) * 60 + int(time_parts[2])
+                                
+                                # Throttle updates to every 0.5 seconds
+                                current_time = time.time()
+                                if current_time - last_progress_time >= 0.5:
+                                    await websocket.send_json({
+                                        "type": "download_progress",
+                                        "percent": round(percent, 1),
+                                        "downloaded_mb": round(size_mb * percent / 100, 2),
+                                        "speed_mbps": round(speed_mbps, 2),
+                                        "eta_seconds": eta_seconds
+                                    })
+                                    last_progress_time = current_time
+                                break
+                except Exception as e:
+                    logger.debug(f"Failed to parse yt-dlp progress: {e}")
+            
+            # Log errors
             if 'ERROR:' in line_str:
                 logger.error(f"yt-dlp error: {line_str}")
         

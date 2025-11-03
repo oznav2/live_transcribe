@@ -139,15 +139,24 @@ async def transcribe_with_incremental_output(
                     segments, info = fw_model.transcribe(
                         audio_file,
                         language=language or default_lang,  # None means auto-detect
-                        beam_size=int(os.getenv("IVRIT_BEAM_SIZE", "5")),
-                        best_of=5,
+                        beam_size=int(os.getenv("IVRIT_BEAM_SIZE", "1")),  # Reduced from 5 to 1 for speed
+                        best_of=1,  # Reduced from 5 to 1 for speed
                         patience=1,
                         length_penalty=1,
                         temperature=0,
                         compression_ratio_threshold=2.4,
                         log_prob_threshold=-1.0,
                         no_speech_threshold=0.6,
-                        word_timestamps=False
+                        word_timestamps=False,
+                        vad_filter=True,  # Enable VAD for faster processing
+                        vad_parameters=dict(
+                            threshold=0.5,
+                            min_speech_duration_ms=250,
+                            max_speech_duration_s=float('inf'),
+                            min_silence_duration_ms=2000,
+                            window_size_samples=1024,
+                            speech_pad_ms=400
+                        )
                     )
                     # Collect segments into text
                     text_parts = []
@@ -298,13 +307,19 @@ async def transcribe_with_incremental_output(
                         segments, info = fw_model.transcribe(
                             chunk_file,
                             language=language or default_lang,  # None means auto-detect
-                            beam_size=5,
-                            best_of=5,
+                            beam_size=1,  # Reduced for speed
+                            best_of=1,  # Reduced for speed
                             patience=1,
                             temperature=0,
                             compression_ratio_threshold=2.4,
                             no_speech_threshold=0.6,
-                            word_timestamps=False
+                            word_timestamps=False,
+                            vad_filter=True,  # Enable VAD for speed
+                            vad_parameters=dict(
+                                threshold=0.5,
+                                min_speech_duration_ms=250,
+                                min_silence_duration_ms=1000
+                            )
                         )
                         text_parts = []
                         for segment in segments:
@@ -472,8 +487,19 @@ def transcribe_chunk(model_config: dict, model, chunk_path: str, language: Optio
             else:
                 actual_model = model
             
-            # Use faster_whisper model for transcription
-            segments, info = actual_model.transcribe(chunk_path, language=language)
+            # Use faster_whisper model for transcription with optimized parameters
+            segments, info = actual_model.transcribe(
+                chunk_path, 
+                language=language,
+                beam_size=1,  # Fast beam search
+                best_of=1,
+                vad_filter=True,  # Enable VAD for speed
+                vad_parameters=dict(
+                    threshold=0.5,
+                    min_speech_duration_ms=250,
+                    min_silence_duration_ms=1000
+                )
+            )
             transcription_text = ' '.join([segment.text for segment in segments]).strip()
             detected_language = info.language if hasattr(info, 'language') else (language or 'unknown')
     except Exception as e:
