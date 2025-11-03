@@ -38,6 +38,7 @@ async def lifespan(app: FastAPI):
     try:
         if MODEL_CONFIGS:
             logger.info(f"Loading default model: {MODEL_SIZE}")
+            logger.info("NOTE: First-time model download may take 3-5 minutes. Please be patient...")
             try:
                 load_model(MODEL_SIZE)
                 logger.info(f"Default model '{MODEL_SIZE}' loaded successfully")

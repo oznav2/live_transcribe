@@ -91,9 +91,11 @@ def load_model(model_name: str):
             
             logger.info(f"Loading faster_whisper model: {model_name_or_path}")
             logger.info(f"Device: {device}, Compute type: {compute_type}")
+            logger.info("Note: First-time model download may take several minutes...")
             
             try:
                 # Load the faster_whisper model
+                logger.info(f"Initializing WhisperModel (downloading if needed)...")
                 model = faster_whisper.WhisperModel(
                     model_name_or_path,
                     device=device,

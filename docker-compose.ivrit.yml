@@ -79,8 +79,8 @@ services:
     env_file:
       - .env
     environment:
-      # Use Deepgram for API-only mode
-      - WHISPER_MODEL=deepgram
+      # Use Deepgram for API-only mode (set WHISPER_MODEL=deepgram in .env if needed)
+      # - WHISPER_MODEL=deepgram  # Uncomment only if using Deepgram API
       - PORT=8009
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - DEEPGRAM_MODEL=${DEEPGRAM_MODEL:-nova-3}
