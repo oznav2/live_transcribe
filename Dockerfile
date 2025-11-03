@@ -33,8 +33,14 @@ RUN python -c "import torch; print('✓ PyTorch installed:', torch.__version__)"
 # Verify Deepgram SDK installation
 RUN python -c "from deepgram import DeepgramClient; import deepgram; print('✓ Deepgram SDK installed:', deepgram.__version__)"
 
-# Copy application code
+# Copy application code - modular structure
 COPY app.py .
+COPY api/ ./api/
+COPY config/ ./config/
+COPY core/ ./core/
+COPY models/ ./models/
+COPY services/ ./services/
+COPY utils/ ./utils/
 COPY static/ ./static/
 
 # Create directory for Whisper models and copy the converted Ivrit model

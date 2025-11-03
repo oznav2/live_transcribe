@@ -90,8 +90,14 @@ RUN python3 -c "from deepgram import DeepgramClient; print('Deepgram SDK install
 # Check if openai-whisper is installed (we don't want it)
 RUN python3 -c "import importlib.util; spec = importlib.util.find_spec('whisper'); print('WARNING: openai-whisper found - this may conflict with faster-whisper') if spec else print('✓ openai-whisper not installed - using faster-whisper only (recommended)')"
 
-# Copy application code
+# Copy application code - modular structure
 COPY app.py .
+COPY api/ ./api/
+COPY config/ ./config/
+COPY core/ ./core/
+COPY models/ ./models/
+COPY services/ ./services/
+COPY utils/ ./utils/
 COPY static/ ./static/
 
 # Create necessary directories for the application
