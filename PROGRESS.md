@@ -10,7 +10,7 @@ Runtime Logs: .logs/
 Phase 0: Setup ✅ COMPLETE
 Phase 1A: Config ✅ COMPLETE
 Phase 1B: State ✅ COMPLETE
-Phase 2: Utils ⏳ NOT STARTED
+Phase 2: Utils ✅ COMPLETE
 Phase 3: Cache ⏳ NOT STARTED
 Phase 4: Models ⏳ NOT STARTED
 Phase 5: Audio ⏳ NOT STARTED
@@ -99,21 +99,29 @@ Notes:
 
 ---
 
-## Phase 2: Extract Utilities ⏳ NOT STARTED
+## Phase 2: Extract Utilities ✅ COMPLETE
 
-Target Files:
-  - utils/validators.py
-  - utils/helpers.py
-  - utils/websocket_helpers.py
+Completed: 2025-11-03
 
-Functions to Extract:
-  - is_youtube_url, should_use_ytdlp -> validators.py
-  - format_duration, format_view_count -> helpers.py
-  - safe_ws_send -> websocket_helpers.py
+Files Created:
+  - utils/validators.py (47 lines)
+  - utils/helpers.py (33 lines)
+  - utils/websocket_helpers.py (29 lines)
 
-Status: Not started
-Files Created: None
-Commits: 0
+Functions Extracted:
+  validators.py:
+    - is_youtube_url (line 2141)
+    - should_use_ytdlp (line 845)
+  helpers.py:
+    - format_duration (line 2111)
+    - format_view_count (line 2126)
+  websocket_helpers.py:
+    - safe_ws_send (line 256)
+
+Commits: 1
+Notes:
+  - All utility functions extracted
+  - Pure functions preserved exactly
 
 ---
 
