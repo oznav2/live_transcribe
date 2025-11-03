@@ -14,7 +14,7 @@ Phase 2: Utils ✅ COMPLETE
 Phase 3: Cache ✅ COMPLETE
 Phase 4: Models ✅ COMPLETE
 Phase 5: Audio ✅ COMPLETE
-Phase 6: Transcription ⏳ NOT STARTED
+Phase 6: Transcription ✅ COMPLETE
 Phase 7: Diarization ⏳ NOT STARTED
 Phase 8: Video Metadata ⏳ NOT STARTED
 Phase 9: API Routes ⏳ NOT STARTED
@@ -220,21 +220,44 @@ Notes:
 
 ---
 
-## Phase 6: Extract Transcription Services ⏳ NOT STARTED
+## Phase 6: Extract Transcription Services ✅ COMPLETE
 
-Target Files:
-  - services/transcription.py
+Completed: 2025-11-03
 
-Functions to Extract (ATOMIC MOVES - Keep nested helpers):
-  - transcribe_with_incremental_output (line 1626) + 4 nested helpers
-  - transcribe_chunk (line 1977)
-  - transcribe_audio_stream (line 2335)
-  - transcribe_vod_with_deepgram (line 2502) + nested helper
-  - transcribe_with_deepgram (line 2781) + 4 nested helpers
+Risk Level: CRITICAL (Async functions, nested helpers, threading model)
 
-Status: Not started
-Files Created: None
-Commits: 0
+Files Created:
+  - services/transcription.py (1208 lines!)
+
+Functions Extracted (ATOMIC MOVES - Nested helpers preserved):
+  - transcribe_with_incremental_output (line 1638) + 4 nested helpers:
+    - run_fw_transcription (nested)
+    - run_transcription (nested)
+    - transcribe_fw_chunk (nested)
+    - transcribe_openai_chunk (nested)
+  - transcribe_chunk (line 1989)
+  - transcribe_audio_stream (line 2347)
+  - transcribe_vod_with_deepgram (line 2514) + nested read_audio_file
+  - transcribe_with_deepgram (line 2793) + 4 nested helpers:
+    - extract_deepgram_transcript (nested)
+    - on_message (nested callback)
+    - on_close (nested callback)
+    - on_error (nested callback)
+
+Critical Patterns Preserved:
+  - Async/await patterns intact
+  - asyncio.run_coroutine_threadsafe for Deepgram callbacks
+  - WebSocket state management
+  - Nested function closures
+  - Thread-safe callback model
+  - Progress reporting patterns
+
+Commits: 1
+Notes:
+  - Largest module created (1208 lines)
+  - All transcription services extracted atomically
+  - Deepgram callback threading model preserved exactly
+  - WebSocket send patterns maintained
 
 ---
 
@@ -356,9 +379,9 @@ Commits: 0
 ## Summary Statistics
 
 Total Phases: 14 (0-13)
-Completed: 0
-In Progress: 1
-Not Started: 13
+Completed: 7
+In Progress: 0
+Not Started: 7
 
 Total Files to Create: ~17 modules + 2 static files
 Estimated Final app.py Size: ~40-50 lines
