@@ -128,47 +128,47 @@ async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: in
                                     key, value = line.strip().split('=', 1)
                                     progress_data[key] = value
 
-                                # Extract time progress
-                                if 'out_time_ms' in progress_data and os.path.exists(audio_file):
-                                    try:
-                                        current_seconds = int(progress_data['out_time_ms']) / 1000000  # Convert to seconds
-                                        file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
-                                        elapsed = time.time() - start_time
+                            # Extract time progress
+                            if 'out_time_ms' in progress_data and os.path.exists(audio_file):
+                                try:
+                                    current_seconds = int(progress_data['out_time_ms']) / 1000000  # Convert to seconds
+                                    file_size_mb = os.path.getsize(audio_file) / (1024 * 1024)
+                                    elapsed = time.time() - start_time
 
-                                        # Calculate speed
-                                        speed_mbps = file_size_mb / elapsed if elapsed > 0 else 0
+                                    # Calculate speed
+                                    speed_mbps = file_size_mb / elapsed if elapsed > 0 else 0
 
-                                        # For unknown duration (duration=0), estimate from file size growth
-                                        if duration == 0:
-                                            # Estimate total duration based on current time vs file size
-                                            # Show indeterminate progress with file size and speed only
-                                            percent = min((file_size_mb / 200) * 100, 95) if file_size_mb < 200 else 95  # Cap at 95%
-                                            eta_seconds = 0  # Unknown
-                                            target_duration = 0  # Unknown
-                                        else:
-                                            # Known duration - calculate accurate progress
-                                            percent = min((current_seconds / duration) * 100, 99)
-                                            remaining_seconds = duration - current_seconds
-                                            eta_seconds = int((remaining_seconds / current_seconds * elapsed)) if current_seconds > 0 else 0
-                                            target_duration = duration
+                                    # For unknown duration (duration=0), estimate from file size growth
+                                    if duration == 0:
+                                        # Estimate total duration based on current time vs file size
+                                        # Show indeterminate progress with file size and speed only
+                                        percent = min((file_size_mb / 200) * 100, 95) if file_size_mb < 200 else 95  # Cap at 95%
+                                        eta_seconds = 0  # Unknown
+                                        target_duration = 0  # Unknown
+                                    else:
+                                        # Known duration - calculate accurate progress
+                                        percent = min((current_seconds / duration) * 100, 99)
+                                        remaining_seconds = duration - current_seconds
+                                        eta_seconds = int((remaining_seconds / current_seconds * elapsed)) if current_seconds > 0 else 0
+                                        target_duration = duration
 
-                                        # Send progress update (throttle to every 1 second)
-                                        if time.time() - last_update >= 1.0:
-                                            try:
-                                                await websocket.send_json({
-                                                    "type": "download_progress",
-                                                    "percent": round(percent, 1),
-                                                    "downloaded_mb": round(file_size_mb, 2),
-                                                    "speed_mbps": round(speed_mbps, 2),
-                                                    "eta_seconds": eta_seconds,
-                                                    "current_time": round(current_seconds, 1),
-                                                    "target_duration": target_duration
-                                                })
-                                                last_update = time.time()
-                                            except Exception as e:
-                                                logger.debug(f"Progress update failed: {e}")
-                                    except (ValueError, ZeroDivisionError) as e:
-                                        logger.debug(f"Progress parsing error: {e}")
+                                    # Send progress update (throttle to every 1 second)
+                                    if time.time() - last_update >= 1.0:
+                                        try:
+                                            await websocket.send_json({
+                                                "type": "download_progress",
+                                                "percent": round(percent, 1),
+                                                "downloaded_mb": round(file_size_mb, 2),
+                                                "speed_mbps": round(speed_mbps, 2),
+                                                "eta_seconds": eta_seconds,
+                                                "current_time": round(current_seconds, 1),
+                                                "target_duration": target_duration
+                                            })
+                                            last_update = time.time()
+                                        except Exception as e:
+                                            logger.debug(f"Progress update failed: {e}")
+                                except (ValueError, ZeroDivisionError) as e:
+                                    logger.debug(f"Progress parsing error: {e}")
                         except Exception as e:
                             logger.debug(f"Progress file read error: {e}")
 
