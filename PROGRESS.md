@@ -16,7 +16,7 @@ Phase 4: Models ✅ COMPLETE
 Phase 5: Audio ✅ COMPLETE
 Phase 6: Transcription ✅ COMPLETE
 Phase 7: Diarization ✅ COMPLETE
-Phase 8: Video Metadata ⏳ NOT STARTED
+Phase 8: Video Metadata ✅ COMPLETE
 Phase 9: API Routes ⏳ NOT STARTED
 Phase 10: WebSocket ⏳ NOT STARTED
 Phase 11: Lifespan ⏳ NOT STARTED
@@ -287,17 +287,28 @@ Notes:
 
 ---
 
-## Phase 8: Extract Video Metadata ⏳ NOT STARTED
+## Phase 8: Extract Video Metadata ✅ COMPLETE
 
-Target Files:
-  - services/video_metadata.py
+Completed: 2025-11-03
 
-Functions to Extract:
-  - get_youtube_metadata (line 2144)
+Files Created:
+  - services/video_metadata.py (71 lines)
 
-Status: Not started
-Files Created: None
-Commits: 0
+Functions Extracted:
+  - get_youtube_metadata (line 2156) - YouTube metadata extraction via yt-dlp
+
+Metadata Extracted:
+  - Video title, channel/uploader, duration
+  - View count, thumbnail URL
+  - Async subprocess handling for yt-dlp
+  - Timeout protection (10 seconds)
+  - JSON parsing with error handling
+
+Commits: 1
+Notes:
+  - Clean async implementation
+  - Proper error handling and logging
+  - Returns structured metadata dict
 
 ---
 
@@ -391,9 +402,9 @@ Commits: 0
 ## Summary Statistics
 
 Total Phases: 14 (0-13)
-Completed: 8
+Completed: 9
 In Progress: 0
-Not Started: 6
+Not Started: 5
 
 Total Files to Create: ~17 modules + 2 static files
 Estimated Final app.py Size: ~40-50 lines
