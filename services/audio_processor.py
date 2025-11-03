@@ -211,11 +211,15 @@ async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: in
             pass
 
         if result.returncode != 0:
-            # Extract the actual error from stderr (now properly captured via communicate())
-            stderr_lines = stderr_output.split('\n') if stderr_output else []
+            # Extract the actual error from stderr (decode bytes to text)
+            stderr_text = (
+                stderr_output.decode('utf-8', errors='ignore') if stderr_output else ''
+            )
+            stderr_lines = stderr_text.split('\n')
             error_line = None
             for line in stderr_lines:
-                if 'error' in line.lower() or 'http error' in line.lower():
+                line_lower = line.lower()
+                if 'error' in line_lower or 'http error' in line_lower:
                     error_line = line.strip()
                     break
 
@@ -225,7 +229,7 @@ async def download_audio_with_ffmpeg(url: str, format: str = 'wav', duration: in
                 logger.error(f"❌ ffmpeg download failed with return code {result.returncode}")
 
             # Check for common error patterns
-            stderr_full = stderr_output.lower() if stderr_output else ""
+            stderr_full = stderr_text.lower()
             if '410' in stderr_full or 'gone' in stderr_full:
                 logger.error("💡 URL has expired. Please get a fresh URL from the source.")
             elif '403' in stderr_full or 'forbidden' in stderr_full:

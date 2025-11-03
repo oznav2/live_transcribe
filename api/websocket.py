@@ -30,13 +30,16 @@ from services.transcription import (
     transcribe_with_deepgram
 )
 from services.diarization import transcribe_with_diarization
-from utils.validators import should_use_ytdlp
+from utils.validators import should_use_ytdlp, sanitize_url
 
 logger = logging.getLogger(__name__)
 
 # Import libraries conditionally
 if DEEPGRAM_AVAILABLE:
-    from deepgram import DeepgramClient
+	try:
+		from deepgram import DeepgramClient
+	except ImportError:
+		DeepgramClient = None
 
 if OPENAI_WHISPER_AVAILABLE:
     try:
@@ -55,7 +58,7 @@ async def websocket_transcribe(websocket: WebSocket):
     try:
         # Receive transcription request
         data = await websocket.receive_json()
-        url = data.get("url")
+        url = sanitize_url(data.get("url"))
         language = data.get("language")
         model_name = data.get("model", "whisper-v3-turbo")  # Default to multilingual model
         capture_mode = data.get("captureMode", "full")
@@ -204,6 +207,12 @@ async def websocket_transcribe(websocket: WebSocket):
                             elif model_config["type"] == "deepgram":
                                 # Use Deepgram v3 file transcription API
                                 try:
+                                    if DeepgramClient is None:
+                                        await websocket.send_json({
+                                            "error": "DeepgramClient not available in installed SDK. Please upgrade to deepgram SDK v4."
+                                        })
+                                        return
+
                                     client = DeepgramClient(api_key=DEEPGRAM_API_KEY) if DEEPGRAM_API_KEY else DeepgramClient()
                                     model = os.getenv("DEEPGRAM_MODEL", "nova-3")
 

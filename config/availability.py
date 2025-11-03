@@ -45,11 +45,14 @@ except ImportError:
 
 # Deepgram availability
 try:
-    from deepgram import DeepgramClient
-    DEEPGRAM_AVAILABLE = bool(DEEPGRAM_API_KEY)
+	from deepgram import DeepgramClient
+	DEEPGRAM_SDK_AVAILABLE = True
 except ImportError:
-    DEEPGRAM_AVAILABLE = False
-    DeepgramClient = None
+	DEEPGRAM_SDK_AVAILABLE = False
+	DeepgramClient = None
+
+# Expose a single flag used across the app to indicate SDK presence
+DEEPGRAM_AVAILABLE = DEEPGRAM_SDK_AVAILABLE
 
 # Check if CUDA is available (lightweight check)
 try:
@@ -109,8 +112,8 @@ elif OPENAI_WHISPER_AVAILABLE and FASTER_WHISPER_AVAILABLE:
     logger.info("Skipping OpenAI Whisper models to avoid conflicts with faster-whisper")
 
 # Optional: Deepgram API (if configured)
-if DEEPGRAM_AVAILABLE and DEEPGRAM_API_KEY:
-    MODEL_CONFIGS["deepgram"] = {"type": "deepgram", "model": DEEPGRAM_MODEL, "language": DEEPGRAM_LANGUAGE}
+if DEEPGRAM_SDK_AVAILABLE and DEEPGRAM_API_KEY:
+	MODEL_CONFIGS["deepgram"] = {"type": "deepgram", "model": DEEPGRAM_MODEL, "language": DEEPGRAM_LANGUAGE}
 
 # Ensure the default model is available
 if MODEL_CONFIGS and MODEL_SIZE not in MODEL_CONFIGS:

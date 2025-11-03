@@ -9,6 +9,7 @@ load_dotenv()  # Must run before any env lookups
 
 import os
 from typing import Optional
+from utils.validators import sanitize_token
 
 
 def parse_bool (value: str) -> bool:
@@ -17,7 +18,7 @@ def parse_bool (value: str) -> bool:
 
 
 # Deepgram API
-DEEPGRAM_API_KEY: str = os.getenv('DEEPGRAM_API_KEY', '')
+DEEPGRAM_API_KEY: str = sanitize_token(os.getenv('DEEPGRAM_API_KEY', ''))
 
 # Base model selection
 WHISPER_MODEL: str = os.getenv('WHISPER_MODEL', 'whisper-v3-turbo')

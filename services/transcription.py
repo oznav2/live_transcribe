@@ -31,7 +31,7 @@ from services.audio_processor import (
 )
 from utils.websocket_helpers import safe_ws_send
 from utils.cache import generate_cache_key, get_cached_audio, save_to_cache, DOWNLOAD_CACHE_DIR
-from utils.validators import should_use_ytdlp
+from utils.validators import should_use_ytdlp, sanitize_url
 from services.audio_processor import download_audio_with_ffmpeg
 
 logger = logging.getLogger(__name__)
@@ -50,36 +50,41 @@ if OPENAI_WHISPER_AVAILABLE:
         OPENAI_WHISPER_AVAILABLE = False
     
 if DEEPGRAM_AVAILABLE:
-    try:
-        from deepgram import DeepgramClient, PrerecordedOptions, LiveTranscriptionEvents
-        from deepgram.clients.prerecorded.v1 import PrerecordedResponse
-        from deepgram.clients.live.v1 import LiveResultResponse
-    except ImportError:
-        DeepgramClient = None
-        PrerecordedOptions = None
-        LiveTranscriptionEvents = None
-    
-    # Deepgram events - try to import from various locations
-    try:
-        from deepgram import LiveTranscriptionEvents as DG_EVENTS
-        DG_EVENT_OPEN = DG_EVENTS.Open
-        DG_EVENT_MESSAGE = DG_EVENTS.Transcript
-        DG_EVENT_CLOSE = DG_EVENTS.Close
-        DG_EVENT_ERROR = DG_EVENTS.Error
-    except (ImportError, AttributeError):
-        try:
-            # Fallback for different SDK versions
-            from deepgram.events import Event as DG_EVENT
-            DG_EVENT_OPEN = "open"
-            DG_EVENT_MESSAGE = "message"
-            DG_EVENT_CLOSE = "close"
-            DG_EVENT_ERROR = "error"
-        except ImportError:
-            # Default values if events not available
-            DG_EVENT_OPEN = "open"
-            DG_EVENT_MESSAGE = "message"
-            DG_EVENT_CLOSE = "close"
-            DG_EVENT_ERROR = "error"
+	# Import Deepgram client
+	try:
+		from deepgram import DeepgramClient
+	except ImportError:
+		DeepgramClient = None
+
+	# Map events for Deepgram SDK v3/v4 (matching original robust pattern)
+	DG_EVENT_OPEN = DG_EVENT_CLOSE = DG_EVENT_ERROR = DG_EVENT_MESSAGE = None
+	try:
+		# v3 style events
+		from deepgram.core.events import EventType as _DGEventEnum
+		DG_EVENT_OPEN = getattr(_DGEventEnum, "OPEN", None)
+		DG_EVENT_MESSAGE = getattr(_DGEventEnum, "MESSAGE", None)
+		DG_EVENT_CLOSE = getattr(_DGEventEnum, "CLOSE", None)
+		DG_EVENT_ERROR = getattr(_DGEventEnum, "ERROR", None)
+	except Exception:
+		# v4 style events
+		try:
+			from deepgram.clients.common.v1.websocket_events import WebSocketEvents
+			# TitleCase names in v4
+			DG_EVENT_OPEN = getattr(WebSocketEvents, "Open", None)
+			DG_EVENT_CLOSE = getattr(WebSocketEvents, "Close", None)
+			DG_EVENT_ERROR = getattr(WebSocketEvents, "Error", None)
+		except Exception:
+			pass
+		try:
+			from deepgram.clients.listen.enums import LiveTranscriptionEvents as _DGLiveEvents
+			# Prefer 'Transcript'; fall back to other possible names
+			DG_EVENT_MESSAGE = (
+				getattr(_DGLiveEvents, "Transcript", None)
+				or getattr(_DGLiveEvents, "TranscriptReceived", None)
+				or getattr(_DGLiveEvents, "Results", None)
+			)
+		except Exception:
+			pass
 
 
 async def transcribe_with_incremental_output(
@@ -154,7 +159,6 @@ async def transcribe_with_incremental_output(
                             min_speech_duration_ms=250,
                             max_speech_duration_s=float('inf'),
                             min_silence_duration_ms=2000,
-                            window_size_samples=1024,
                             speech_pad_ms=400
                         )
                     )
@@ -178,20 +182,20 @@ async def transcribe_with_incremental_output(
                 await asyncio.sleep(2)
                 elapsed = time.time() - start_time
                 metrics = calculate_progress_metrics(audio_duration, elapsed)
-                
+
                 await websocket.send_json({
                     "type": "transcription_progress",
                     "audio_duration": audio_duration,
-                    "percentage": metrics["percentage"],
-                    "eta_seconds": metrics["eta_seconds"],
-                    "speed": metrics["speed"],
+                    "percentage": metrics["percent_complete"],
+                    "eta_seconds": metrics["estimated_time_remaining"],
+                    "speed": metrics["processing_speed"],
                     "elapsed_seconds": int(elapsed)
                 })
-            
+
             result = await task
             transcript = result.get('text', '').strip()
             detected_language = result.get('language', language or 'he')
-            
+
         elif model_config["type"] == "openai":
             def run_transcription():
                 use_fp16 = torch.cuda.is_available()
@@ -200,22 +204,22 @@ async def transcribe_with_incremental_output(
                 except Exception as e:
                     logger.warning(f"GPU/FP16 failed: {e}. Retrying with fp16=False.")
                     return model.transcribe(audio_file, language=language, fp16=False, verbose=False)
-            
+
             # Run with progress monitoring
             loop = asyncio.get_event_loop()
             task = loop.run_in_executor(None, run_transcription)
-            
+
             while not task.done():
                 await asyncio.sleep(2)
                 elapsed = time.time() - start_time
                 metrics = calculate_progress_metrics(audio_duration, elapsed)
-                
+
                 await websocket.send_json({
                     "type": "transcription_progress",
                     "audio_duration": audio_duration,
-                    "percentage": metrics["percentage"],
-                    "eta_seconds": metrics["eta_seconds"],
-                    "speed": metrics["speed"],
+                    "percentage": metrics["percent_complete"],
+                    "eta_seconds": metrics["estimated_time_remaining"],
+                    "speed": metrics["processing_speed"],
                     "elapsed_seconds": int(elapsed)
                 })
             
@@ -252,8 +256,8 @@ async def transcribe_with_incremental_output(
     logger.info(f"Long audio ({audio_duration}s), using chunked processing")
     
     try:
-        # Split audio into chunks
-        temp_dir, chunk_files = split_audio_for_incremental(audio_file, chunk_seconds, overlap_seconds=5)
+        # Split audio into chunks (no overlap to avoid duplication in transcript)
+        temp_dir, chunk_files = split_audio_for_incremental(audio_file, chunk_seconds, overlap_seconds=0)
         total_chunks = len(chunk_files)
         
         logger.info(f"Split audio into {total_chunks} chunks")
@@ -682,9 +686,38 @@ async def transcribe_vod_with_deepgram(websocket: WebSocket, url: str, language:
         return
 
     # Initialize Deepgram client
+    if DeepgramClient is None:
+        await websocket.send_json({
+            "error": "DeepgramClient not available in installed SDK. Please upgrade to deepgram SDK v4."
+        })
+        return
+
+    # Helper to detect auth errors robustly
+    def _is_auth_error(err_msg: str) -> bool:
+        msg = (err_msg or "").lower()
+        return (
+            "401" in msg or
+            "unauthorized" in msg or
+            "invalid credentials" in msg or
+            "invalid auth" in msg or
+            "missing api key" in msg or
+            "no api key" in msg or
+            "forbidden" in msg
+        )
+
+    # If API key missing, return error (no fallback when Deepgram is explicitly selected)
+    if not DEEPGRAM_API_KEY:
+        await websocket.send_json({
+            "error": "Deepgram API key not configured. Please set DEEPGRAM_API_KEY in your .env file."
+        })
+        return
+
     client = DeepgramClient(api_key=DEEPGRAM_API_KEY) if DEEPGRAM_API_KEY else DeepgramClient()
     model = os.getenv("DEEPGRAM_MODEL", "nova-3")
     lang = language or os.getenv("DEEPGRAM_LANGUAGE", "en-US")
+
+    # Sanitize potential pasted links (zero-width chars/backticks)
+    url = sanitize_url(url)
 
     try:
         # OPTIMIZATION: Try sending URL directly to Deepgram first (much faster!)
@@ -744,16 +777,24 @@ async def transcribe_vod_with_deepgram(websocket: WebSocket, url: str, language:
                 logger.warning("No transcript received from Deepgram URL method")
 
         except Exception as url_error:
+            # Detect auth errors and fail immediately (no fallback when Deepgram is explicitly selected)
+            err_text = str(url_error)
+            if _is_auth_error(err_text):
+                logger.error(f"Deepgram authentication failed: {err_text}")
+                await websocket.send_json({
+                    "error": f"Deepgram authentication failed: {err_text}\n\nPlease check:\n  • DEEPGRAM_API_KEY is correctly set in .env\n  • API key is valid and not expired\n  • Account has sufficient credits"
+                })
+                return
             # URL method failed (maybe URL not directly accessible by Deepgram)
             logger.warning(f"Deepgram URL method failed: {url_error}, falling back to download method")
             await websocket.send_json({"type": "status", "message": "⚠️ Direct URL method failed. Switching to download method..."})
 
-        # FALLBACK: Download with ffmpeg (proven working method) and upload to Deepgram
-        await websocket.send_json({"type": "status", "message": "⬇️ Step 2/3: Downloading audio from URL using ffmpeg..."})
+        # FALLBACK: Download with robust method (yt-dlp preferred for YouTube) and upload to Deepgram
+        await websocket.send_json({"type": "status", "message": "⬇️ Step 2/3: Downloading audio from URL (yt-dlp/ffmpeg fallback)..."})
 
-        # Use ffmpeg download method - download complete file for better transcription and caching
-        # Using duration=0 for complete file which enables caching
-        audio_file = await download_audio_with_ffmpeg(url, format='wav', duration=0, websocket=websocket)
+        # Prefer yt-dlp for YouTube/shorts; falls back to ffmpeg automatically
+        from services.audio_processor import download_with_fallback
+        audio_file = await download_with_fallback(url, language=language, format='wav', websocket=websocket, use_cache=True)
         if not audio_file:
             # Provide detailed error message based on logs
             error_detail = "Failed to download audio from URL.\n\n"
@@ -926,6 +967,11 @@ async def transcribe_vod_with_deepgram(websocket: WebSocket, url: str, language:
                 await websocket.send_json({
                     "error": "Audio file too large for direct upload. Try using a URL instead or use a smaller file."
                 })
+            elif _is_auth_error(error_msg):
+                logger.error(f"Deepgram authentication failed on file upload: {e}")
+                await websocket.send_json({
+                    "error": f"Deepgram authentication failed: {error_msg}\n\nPlease check:\n  • DEEPGRAM_API_KEY is correctly set in .env\n  • API key is valid and not expired\n  • Account has sufficient credits"
+                })
             else:
                 logger.error(f"Deepgram transcription error: {e}")
                 await websocket.send_json({"error": f"Deepgram transcription failed: {str(e)}"})
@@ -994,6 +1040,12 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
 
 
         # Initialize Deepgram client
+        if DeepgramClient is None:
+            await websocket.send_json({
+                "error": "DeepgramClient not available in installed SDK. Please upgrade to deepgram SDK v4."
+            })
+            return
+
         client = DeepgramClient(api_key=DEEPGRAM_API_KEY) if DEEPGRAM_API_KEY else DeepgramClient()
         # Apply user-requested params
         # TIME_LIMIT: Set to 0 or negative for unlimited streaming, or positive number for time limit in seconds

@@ -3,6 +3,51 @@ import re
 from typing import Optional
 
 
+def sanitize_url(url: str) -> str:
+    """Remove invisible/unsafe characters and trim whitespace/backticks.
+
+    This helps with pasted links that include zero-width characters, NBSP,
+    or formatting artifacts that can break network requests.
+    """
+    if not isinstance(url, str):
+        return url
+
+    # Remove common zero-width/invisible characters and NBSP
+    # \u200B (ZWSP), \u200C (ZWNJ), \u200D (ZWJ), \u2060 (WJ), \uFEFF (BOM), \u00A0 (NBSP)
+    invisible_pattern = r"[\u200B\u200C\u200D\u2060\uFEFF\u00A0]"
+    cleaned = re.sub(invisible_pattern, "", url)
+
+    # Strip backticks and surrounding whitespace/newlines
+    cleaned = cleaned.strip().strip('`').strip()
+
+    # Collapse internal whitespace that can appear between path segments
+    cleaned = re.sub(r"\s+", "", cleaned)
+
+    return cleaned
+
+
+def sanitize_token (token: Optional[str]) -> str:
+    """Normalize API tokens/keys by stripping whitespace and invisible chars.
+
+    Prevents subtle pasting artifacts (ZWSP, NBSP, BOM) that cause auth errors.
+    Returns empty string if input is falsy.
+    """
+    if not token:
+        return ''
+
+    # Remove common zero-width/invisible characters and NBSP
+    invisible_pattern = r"[\u200B\u200C\u200D\u2060\uFEFF\u00A0]"
+    cleaned = re.sub(invisible_pattern, "", str(token))
+
+    # Strip backticks and surrounding whitespace/newlines
+    cleaned = cleaned.strip().strip('`').strip()
+
+    # Collapse internal whitespace
+    cleaned = re.sub(r"\s+", "", cleaned)
+
+    return cleaned
+
+
 def is_youtube_url(url: str) -> bool:
     """Check if URL is a YouTube URL"""
     youtube_patterns = [
@@ -10,7 +55,8 @@ def is_youtube_url(url: str) -> bool:
         r'youtu\.be/',
         r'youtube\.com/embed/',
         r'youtube\.com/v/',
-        r'm\.youtube\.com'
+        r'm\.youtube\.com',
+        r'youtube\.com/shorts/',
     ]
     
     url_lower = url.lower()

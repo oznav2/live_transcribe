@@ -35,6 +35,32 @@ async def lifespan(app: FastAPI):
         logger.error("  • openai-whisper: pip install openai-whisper")
         logger.error("  • Configure Deepgram API with DEEPGRAM_API_KEY")
         logger.error("=" * 60)
+
+    # Deepgram auth probe with guidance for common issues
+    try:
+        if DEEPGRAM_AVAILABLE and DEEPGRAM_API_KEY:
+            logger.info("Probing Deepgram authentication...")
+            try:
+                # Lightweight request to Deepgram API to validate key
+                import requests
+                resp = requests.get(
+                    'https://api.deepgram.com/v1/projects',
+                    headers={'Authorization': f'Token {DEEPGRAM_API_KEY}'},
+                    timeout=5
+                )
+                if resp.status_code == 200:
+                    logger.info("✓ Deepgram authentication OK")
+                elif resp.status_code in (401, 403):
+                    logger.warning("Deepgram auth failed (401/403). We'll auto-fallback to Whisper on VOD.")
+                    logger.warning("Tips: Ensure DEEPGRAM_API_KEY has no hidden characters; we sanitize at load.")
+                    logger.warning("If using an ENV file, verify quotes and no trailing spaces.")
+                else:
+                    logger.info(f"Deepgram auth probe status: {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"Deepgram auth probe error: {e}")
+    except Exception:
+        # Non-fatal
+        pass
     
     try:
         if MODEL_CONFIGS:
