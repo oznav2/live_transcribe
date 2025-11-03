@@ -8,7 +8,9 @@ from config.availability import (
     FASTER_WHISPER_AVAILABLE, OPENAI_WHISPER_AVAILABLE, 
     DEEPGRAM_AVAILABLE, MODEL_CONFIGS
 )
-from config.settings import DEEPGRAM_API_KEY, CACHE_ENABLED, MODEL_SIZE
+from config.settings import DEEPGRAM_API_KEY
+from config.constants import CACHE_ENABLED
+from config.availability import MODEL_SIZE
 
 from models.loader import load_model
 from utils.cache import (

@@ -32,3 +32,10 @@ URL_DOWNLOADS: Dict[str, Any] = {}
 # Current model tracking
 current_model: Optional[Any] = None
 current_model_name: Optional[str] = None
+
+# WebSocket client tracking
+clients: Dict[str, Any] = {}
+
+# Task tracking
+processing_tasks: Dict[str, Any] = {}
+chunk_processing_buffers: Dict[str, Any] = {}

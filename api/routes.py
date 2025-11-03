@@ -12,7 +12,8 @@ from pydantic import BaseModel
 from config.constants import (
     CACHE_DIR, DOWNLOAD_CACHE_DIR, CACHE_MAX_AGE_HOURS
 )
-from config.settings import CACHE_ENABLED, MODEL_SIZE
+from config.constants import CACHE_ENABLED
+from config.availability import MODEL_SIZE
 from core.state import cached_index_html, URL_DOWNLOADS, current_model, current_model_name
 from utils.validators import is_youtube_url
 from utils.helpers import format_duration, format_view_count

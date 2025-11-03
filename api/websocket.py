@@ -39,7 +39,11 @@ if DEEPGRAM_AVAILABLE:
     from deepgram import DeepgramClient
 
 if OPENAI_WHISPER_AVAILABLE:
-    import torch
+    try:
+        import torch
+    except ImportError:
+        torch = None
+        OPENAI_WHISPER_AVAILABLE = False
 
 
 async def websocket_transcribe(websocket: WebSocket):

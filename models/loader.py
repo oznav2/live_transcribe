@@ -25,13 +25,11 @@ from core.state import (
     diarization_pipeline,
     model_lock,
     diarization_pipeline_lock,
+    current_model,
+    current_model_name,
 )
 
 logger = logging.getLogger(__name__)
-
-# Store current model info globally
-current_model = None
-current_model_name = None
 
 
 def load_model(model_name: str):
@@ -180,3 +178,6 @@ def get_diarization_pipeline():
                 return None
     
     return diarization_pipeline
+
+# Alias for compatibility
+load_diarization_pipeline = get_diarization_pipeline

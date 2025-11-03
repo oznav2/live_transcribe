@@ -15,3 +15,17 @@ CHANNELS = 1  # Mono audio
 CHUNK_DURATION = 5   # seconds - very short for fast real-time processing
 CHUNK_OVERLAP = 1    # seconds - minimal overlap
 AUDIO_QUEUE_SIZE = 200  # Large queue to handle slow models (Ivrit, large models)
+
+# Upload configuration
+UPLOAD_FOLDER = Path('uploads')
+UPLOAD_FOLDER.mkdir(exist_ok=True)
+MAX_CONTENT_LENGTH = 500 * 1024 * 1024  # 500MB max file size
+
+# Streaming configuration
+CHUNK_SIZE = 8192  # Bytes for streaming
+
+# VAD configuration
+DEFAULT_VAD_THRESHOLD = 0.5
+DEFAULT_MIN_SPEECH_DURATION = 0.5
+DEFAULT_MIN_SILENCE_DURATION = 1.0
+DEFAULT_SPEECH_PAD = 0.5

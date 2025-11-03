@@ -51,3 +51,12 @@ DEEPGRAM_LANGUAGE: str = os.getenv('DEEPGRAM_LANGUAGE', 'en-US')
 
 # Server port
 PORT: int = int(os.getenv('PORT', '8000'))
+
+# Device configuration (for compatibility)
+DEVICE: str = 'cuda' if os.getenv('CUDA_VISIBLE_DEVICES') else 'cpu'
+COMPUTE_TYPE: str = 'float16' if DEVICE == 'cuda' else 'int8'
+
+# Service flags
+USE_DEEPGRAM: bool = bool(DEEPGRAM_API_KEY)
+GROQ_API_KEY: str = os.getenv('GROQ_API_KEY', '')
+USE_GROQ: bool = bool(GROQ_API_KEY)

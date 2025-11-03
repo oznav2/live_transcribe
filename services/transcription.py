@@ -41,8 +41,13 @@ if FASTER_WHISPER_AVAILABLE:
     import faster_whisper
     
 if OPENAI_WHISPER_AVAILABLE:
-    import whisper
-    import torch
+    try:
+        import whisper
+        import torch
+    except ImportError:
+        whisper = None
+        torch = None
+        OPENAI_WHISPER_AVAILABLE = False
     
 if DEEPGRAM_AVAILABLE:
     try:
