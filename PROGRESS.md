@@ -11,7 +11,7 @@ Phase 0: Setup ✅ COMPLETE
 Phase 1A: Config ✅ COMPLETE
 Phase 1B: State ✅ COMPLETE
 Phase 2: Utils ✅ COMPLETE
-Phase 3: Cache ⏳ NOT STARTED
+Phase 3: Cache ✅ COMPLETE
 Phase 4: Models ⏳ NOT STARTED
 Phase 5: Audio ⏳ NOT STARTED
 Phase 6: Transcription ⏳ NOT STARTED
@@ -125,26 +125,33 @@ Notes:
 
 ---
 
-## Phase 3: Extract Cache Management ⏳ NOT STARTED
+## Phase 3: Extract Cache Management ✅ COMPLETE
 
-Target Files:
-  - utils/cache.py
+Completed: 2025-11-03
 
-Functions to Extract (from APP_FUNCTION_INVENTORY.md):
-  - init_capture_dir (line 359)
-  - init_download_cache_dir (line 366)
-  - init_cache_dir (line 2033)
-  - get_url_hash (line 387)
-  - get_cached_download (line 392)
-  - save_download_to_cache (line 417)
-  - generate_cache_key (line 2057)
-  - get_cached_audio (line 2065)
-  - save_to_cache (line 2077)
-  - All other cache functions
+Files Created:
+  - utils/cache.py (242 lines)
 
-Status: Not started
-Files Created: None
-Commits: 0
+Functions Extracted:
+  - init_capture_dir (line 371)
+  - init_download_cache_dir (line 378)
+  - init_cache_dir (line 2045)
+  - get_url_hash (line 399)
+  - get_cached_download (line 404)
+  - save_download_to_cache (line 429)
+  - generate_cache_key (line 2069)
+  - get_cached_audio (line 2077)
+  - save_to_cache (line 2089)
+  - get_cache_stats (from line 3530)
+  - clear_cache (from line 3550)
+  - get_download_cache_stats (from line 3567)
+  - clear_download_cache (from line 3596)
+
+Commits: 1
+Notes:
+  - All cache management functions extracted
+  - Added cache statistics functions
+  - File I/O patterns maintained
 
 ---
 
