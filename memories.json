@@ -1731,7 +1731,24 @@
       "lastAccessed": "2025-11-03T21:54:29.955Z",
       "lastVerified": "2025-11-03T21:54:29.955Z",
       "status": "fresh"
+    },
+    {
+      "id": "mem_1762260739532_h9yx7pvk6",
+      "content": "Investigation started: Text duplication in transcription output. User reports phrases repeating many times like \"drop-in replacement for Docker\" repeated continuously. Need to trace through audio chunking, transcription processing, WebSocket streaming, and cache handling.",
+      "type": "general",
+      "tags": [
+        "general",
+        "investigation",
+        "transcription",
+        "bug",
+        "duplication"
+      ],
+      "timestamp": "2025-11-04T12:52:19.530Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-11-04T12:52:19.530Z",
+      "lastVerified": "2025-11-04T12:52:19.530Z",
+      "status": "fresh"
     }
   ],
-  "lastUpdated": "2025-11-03T21:54:29.955Z"
+  "lastUpdated": "2025-11-04T12:52:19.530Z"
 }

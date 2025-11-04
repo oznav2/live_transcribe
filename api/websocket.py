@@ -517,3 +517,91 @@ async def websocket_translate(websocket: WebSocket):
             await websocket.send_json({"error": str(e)})
         except:
             pass
+
+
+async def websocket_summarize(websocket: WebSocket):
+    """WebSocket endpoint for streaming Hebrew summarization with progress updates"""
+    await websocket.accept()
+
+    try:
+        # Import summarization service
+        from services.summary import generate_hebrew_summary_chunked
+        from utils.summary_cache import save_summary_to_file
+
+        # Receive summarization request
+        data = await websocket.receive_json()
+        text = data.get("text")
+        language = data.get("language")
+        url = data.get("url")
+        video_title = data.get("video_title")
+
+        if not text or not language:
+            await websocket.send_json({"error": "Text and language are required"})
+            return
+
+        logger.info(f"Starting Hebrew summarization: {language} source, {len(text)} chars")
+
+        # Notify client that summarization is starting
+        await websocket.send_json({
+            "type": "status",
+            "message": "Starting summarization..."
+        })
+
+        # Generate Hebrew summary with progress updates
+        full_summary = []
+
+        async for summary_chunk, chunk_idx, total_chunks in generate_hebrew_summary_chunked(
+            text=text,
+            source_language=language,
+            video_title=video_title,
+            model="gpt-4o-mini"  # Fast model for quick summarization
+        ):
+            # Accumulate summary
+            if summary_chunk:
+                full_summary.append(summary_chunk)
+
+            # Calculate progress percentage
+            progress_pct = ((chunk_idx + 1) / total_chunks) * 100
+
+            # Send progress update with summary chunk
+            await websocket.send_json({
+                "type": "summary_chunk",
+                "text": summary_chunk,
+                "chunk_index": chunk_idx,
+                "total_chunks": total_chunks,
+                "progress": progress_pct
+            })
+
+            logger.debug(f"Summary progress: {chunk_idx+1}/{total_chunks} ({progress_pct:.1f}%)")
+
+        # Combine all summary chunks (usually just one final chunk)
+        final_summary = " ".join(full_summary)
+
+        # Save summary to file
+        if url and final_summary:
+            save_summary_to_file(
+                url=url,
+                summary_text=final_summary,
+                source_language=language
+            )
+
+        # Send completion message
+        await websocket.send_json({
+            "type": "complete",
+            "message": "Summarization complete",
+            "summary": final_summary,
+            "source_language": language,
+            "target_language": "he",  # Always Hebrew
+            "target_language_name": "Hebrew"
+        })
+
+        logger.info(f"Hebrew summarization completed: {len(final_summary)} chars")
+
+    except WebSocketDisconnect:
+        logger.info("Client disconnected during summarization")
+    except Exception as e:
+        logger.error(f"Summarization WebSocket error: {e}", exc_info=True)
+        try:
+            await websocket.send_json({"error": str(e)})
+        except:
+            pass

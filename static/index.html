@@ -86,6 +86,24 @@
                 </div>
             </div>
 
+            <!-- Summary Section (Hebrew) -->
+            <div id="summarySection" class="video-info-section rtl" style="display: none;">
+                <div class="video-info-header">
+                    <i class="fas fa-file-alt"></i>
+                    <span>תקציר</span>
+                </div>
+
+                <div id="summaryContent" class="summary-content">
+                    <!-- Summary text will be displayed here -->
+                </div>
+
+                <!-- Progress Indicator -->
+                <div id="summaryProgress" class="video-info-loading" style="display: none;">
+                    <i class="fas fa-spinner fa-spin"></i>
+                    <span id="summaryProgressText">יוצר סיכום...</span>
+                </div>
+            </div>
+
             <!-- Language Selection -->
             <div class="form-group">
                 <label class="form-label">Language (Optional)</label>
@@ -176,6 +194,10 @@
                     <button id="translateBtn" class="icon-btn hidden" title="Translate text">
                         <i class="fas fa-language"></i>
                         <span id="translateBtnText" style="margin-left: 6px; font-size: 13px;">Translate</span>
+                    </button>
+                    <button id="summarizeBtn" class="icon-btn hidden" title="Summarize to Hebrew">
+                        <i class="fas fa-file-alt"></i>
+                        <span style="margin-left: 6px; font-size: 13px;">סכם את התוכן</span>
                     </button>
                 </div>
             </div>
@@ -302,16 +324,16 @@
             </div>
 
             <!-- Translation Area (hidden by default) -->
-            <div id="translationSection" class="hidden" style="margin-top: 24px;">
-                <div class="transcription-header">
-                    <div class="transcription-title">
+            <div id="translationSection" class="hidden">
+                <div class="translation-header">
+                    <div class="translation-title">
                         <i class="fas fa-language"></i>
                         Translation
                     </div>
-                    <div id="translationLanguages" class="word-count" style="font-size: 12px;"></div>
+                    <div id="translationLanguages" class="translation-languages"></div>
                 </div>
-                <div id="translationBox" class="transcription-area" style="background: #f0f4f8; border: 2px solid #3b82f6;">
-                    <div id="translationContent" style="white-space: pre-wrap; color: #1e293b; padding: 16px; min-height: 100px; font-size: 15px;"></div>
+                <div id="translationBox">
+                    <div id="translationContent"></div>
                 </div>
             </div>
 
@@ -343,6 +365,7 @@
         const downloadBtn = document.getElementById('downloadBtn');
         const translateBtn = document.getElementById('translateBtn');
         const translateBtnText = document.getElementById('translateBtnText');
+        const summarizeBtn = document.getElementById('summarizeBtn');
         const statusDot = document.getElementById('statusDot');
         const statusText = document.getElementById('statusText');
         const transcriptionBox = document.getElementById('transcriptionBox');
@@ -433,11 +456,13 @@
             if (language && transcriptionText.trim()) {
                 translateBtnText.textContent = getTranslateButtonText(language);
                 translateBtn.classList.remove('hidden');
+                summarizeBtn.classList.remove('hidden');  // Also show summarize button
             }
         }
 
         function hideTranslateButton() {
             translateBtn.classList.add('hidden');
+            summarizeBtn.classList.add('hidden');  // Also hide summarize button
         }
 
         async function performTranslation() {
@@ -584,6 +609,102 @@
                 // Re-enable button
                 translateBtn.disabled = false;
                 translateBtnText.textContent = originalText;
+            }
+        }
+
+        // Summarization Function
+        async function performSummarization() {
+            if (!transcriptionText.trim()) {
+                alert('No transcription text to summarize');
+                return;
+            }
+
+            if (!detectedLanguage) {
+                alert('Language not detected. Cannot summarize.');
+                return;
+            }
+
+            // Disable button
+            summarizeBtn.disabled = true;
+
+            // Show progress indicator
+            const summarySection = document.getElementById('summarySection');
+            const summaryContent = document.getElementById('summaryContent');
+            const summaryProgress = document.getElementById('summaryProgress');
+
+            summarySection.style.display = 'block';
+            summaryProgress.style.display = 'flex';
+            summaryContent.textContent = '';
+
+            try {
+                // Create WebSocket connection for streaming summarization
+                const wsUrl = `ws://${window.location.host}/ws/summarize`;
+                const summaryWs = new WebSocket(wsUrl);
+
+                summaryWs.onopen = () => {
+                    console.log('Summary WebSocket connected');
+
+                    // Send summarization request
+                    summaryWs.send(JSON.stringify({
+                        text: transcriptionText,
+                        language: detectedLanguage,
+                        url: currentUrl,
+                        video_title: currentVideoInfo ? currentVideoInfo.title : null
+                    }));
+                };
+
+                summaryWs.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+
+                    if (data.type === 'status') {
+                        console.log('Summary status:', data.message);
+                    } else if (data.type === 'summary_chunk') {
+                        // Only display the final summary chunk, not intermediate processing messages
+                        if (data.chunk_index === 1 && data.total_chunks === 2) {
+                            // This is the final chunk with actual summary
+                            summaryContent.textContent = data.text;
+                        }
+                        // Skip chunk_index 0 (processing message)
+                    } else if (data.type === 'complete') {
+                        // Summary complete - use the complete summary
+                        summaryContent.textContent = data.summary;
+
+                        // Hide progress indicator
+                        setTimeout(() => {
+                            summaryProgress.style.display = 'none';
+                        }, 500);
+
+                        // Re-enable button
+                        summarizeBtn.disabled = false;
+
+                        // Close WebSocket
+                        summaryWs.close();
+
+                        console.log('Summary complete');
+                    } else if (data.error) {
+                        alert(`Summarization error: ${data.error}`);
+                        summaryProgress.style.display = 'none';
+                        summarizeBtn.disabled = false;
+                        summaryWs.close();
+                    }
+                };
+
+                summaryWs.onerror = (error) => {
+                    console.error('Summary WebSocket error:', error);
+                    alert('Summarization connection error. Please try again.');
+                    summaryProgress.style.display = 'none';
+                    summarizeBtn.disabled = false;
+                };
+
+                summaryWs.onclose = () => {
+                    console.log('Summary WebSocket closed');
+                };
+
+            } catch (error) {
+                console.error('Summarization error:', error);
+                alert(`Summarization error: ${error.message}`);
+                summaryProgress.style.display = 'none';
+                summarizeBtn.disabled = false;
             }
         }
 
@@ -1200,6 +1321,7 @@
         copyBtn.addEventListener('click', copyToClipboard);
         downloadBtn.addEventListener('click', downloadTranscription);
         translateBtn.addEventListener('click', performTranslation);
+        summarizeBtn.addEventListener('click', performSummarization);
 
         urlInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !startBtn.classList.contains('hidden')) {
