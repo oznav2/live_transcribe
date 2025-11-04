@@ -9,15 +9,16 @@ logger = logging.getLogger(__name__)
 
 # OpenAI client - import conditionally
 try:
-    from openai import OpenAI
+    from openai import OpenAI, AsyncOpenAI
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
     OpenAI = None
+    AsyncOpenAI = None
 
 
 def get_openai_client() -> Optional[OpenAI]:
-    """Initialize OpenAI client with API key from environment."""
+    """Initialize synchronous OpenAI client with API key from environment."""
     if not OPENAI_AVAILABLE:
         logger.error("OpenAI package not installed. Install with: pip install openai>=1.50.0")
         return None
@@ -36,6 +37,29 @@ def get_openai_client() -> Optional[OpenAI]:
         return client
     except Exception as e:
         logger.error(f"Failed to initialize OpenAI client: {e}")
+        return None
+
+
+async def get_async_openai_client() -> Optional[AsyncOpenAI]:
+    """Initialize asynchronous OpenAI client with API key from environment."""
+    if not OPENAI_AVAILABLE:
+        logger.error("OpenAI package not installed. Install with: pip install openai>=1.50.0")
+        return None
+
+    # Get and sanitize API key
+    api_key = sanitize_token(os.getenv('OPENAI_API_KEY', ''))
+    if not api_key:
+        logger.warning("OPENAI_API_KEY not configured in .env file")
+        return None
+
+    # Get base URL (optional, defaults to OpenAI)
+    base_url = os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+
+    try:
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        return client
+    except Exception as e:
+        logger.error(f"Failed to initialize async OpenAI client: {e}")
         return None
 
 
@@ -181,8 +205,8 @@ async def generate_hebrew_summary_chunked(
         - First yield (0, 2): "Processing..." (50% progress)
         - Final yield (1, 2): actual summary (100% progress)
     """
-    # Get OpenAI client
-    client = get_openai_client()
+    # Get async OpenAI client
+    client = await get_async_openai_client()
     if not client:
         logger.error("OpenAI client not available - check API key configuration")
         return
@@ -200,8 +224,8 @@ async def generate_hebrew_summary_chunked(
         # Send initial progress update (50%)
         yield ("מעבד את הטקסט...", 0, 2)  # "Processing the text..." in Hebrew
 
-        # Call OpenAI API
-        response = client.chat.completions.create(
+        # Call OpenAI API asynchronously
+        response = await client.chat.completions.create(
             model=model,
             messages=[
                 {

@@ -31,6 +31,7 @@ from services.transcription import (
 )
 from services.diarization import transcribe_with_diarization
 from utils.validators import should_use_ytdlp, sanitize_url
+from utils.cleantext import clean_transcription_text
 
 logger = logging.getLogger(__name__)
 
@@ -305,16 +306,25 @@ async def websocket_transcribe(websocket: WebSocket):
                             except Exception as e:
                                 logger.error(f"Parallel transcription worker failed: {e}")
 
-                    # Order results by index and stream partials to client
+                    # Order results by index and concatenate all text
                     detected_language = language or "unknown"
+                    all_text_parts = []
                     for idx, text, det_lang in sorted(results, key=lambda r: r[0]):
                         if text:
                             detected_language = det_lang  # Keep track of detected language
-                            await websocket.send_json({
-                                "type": "transcription",
-                                "text": text,
-                                "language": det_lang
-                            })
+                            all_text_parts.append(text)
+
+                    # Apply deduplication to the full concatenated text
+                    full_text = ' '.join(all_text_parts)
+                    cleaned_text = clean_transcription_text(full_text)
+
+                    # Send the cleaned text as a single transcription message
+                    if cleaned_text:
+                        await websocket.send_json({
+                            "type": "transcription",
+                            "text": cleaned_text,
+                            "language": detected_language
+                        })
 
                     await websocket.send_json({
                         "type": "complete",

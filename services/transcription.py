@@ -8,6 +8,7 @@ import tempfile
 import shutil
 import subprocess
 import queue
+import threading
 from typing import Optional, Tuple, Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -33,6 +34,13 @@ from utils.websocket_helpers import safe_ws_send
 from utils.cache import generate_cache_key, get_cached_audio, save_to_cache, DOWNLOAD_CACHE_DIR
 from utils.validators import should_use_ytdlp, sanitize_url
 from services.audio_processor import download_audio_with_ffmpeg
+from utils.cleantext import (
+    clean_transcription_text,
+    IncrementalDeduplicator,
+    remove_repeated_word_sequences,
+    split_into_sentences,
+    remove_consecutive_duplicate_sentences,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +234,17 @@ async def transcribe_with_incremental_output(
             result = await task
             transcript = result.get('text', '').strip()
             detected_language = result.get('language', language or 'unknown')
+            # Apply deduplication to single-chunk transcript before sending
+            if transcript:
+                try:
+                    # Single chunk: apply robust cleaning
+                    transcript = remove_repeated_word_sequences(transcript, min_sequence_length=5)
+                    sentences = split_into_sentences(transcript)
+                    sentences = remove_consecutive_duplicate_sentences(sentences)
+                    transcript = ''.join(sentences)
+                except Exception:
+                    # Fail-safe: leave transcript as-is
+                    pass
             
             # Send final transcript
             if transcript:
@@ -263,6 +282,8 @@ async def transcribe_with_incremental_output(
         logger.info(f"Split audio into {total_chunks} chunks")
         
         transcripts = []
+        # Initialize stateful deduplicator to handle overlap across chunk boundaries
+        deduper = IncrementalDeduplicator(context_window=20, min_sequence_length=5)
         detected_language = language or 'unknown'
         
         for i, chunk_file in enumerate(chunk_files):
@@ -361,16 +382,30 @@ async def transcribe_with_incremental_output(
             
 
             
-            # Send incremental result
+            # Send incremental result (apply stateful per-chunk deduplication)
             if chunk_text:
-                await websocket.send_json({
-                    "type": "transcription_chunk",
-                    "text": chunk_text,
-                    "chunk_index": i,
-                    "total_chunks": total_chunks,
-                    "is_final": i == total_chunks - 1
-                })
-                transcripts.append(chunk_text)
+                # Boundary-aware and intra-chunk deduplication
+                try:
+                    cleaned_chunk = deduper.process_chunk(chunk_text)
+                    # Apply repeated word sequence removal for robustness
+                    cleaned_chunk = remove_repeated_word_sequences(cleaned_chunk, min_sequence_length=5)
+                    # Apply sentence-level consecutive duplicate removal
+                    sentences = split_into_sentences(cleaned_chunk)
+                    sentences = remove_consecutive_duplicate_sentences(sentences)
+                    cleaned_chunk = ''.join(sentences)
+                except Exception as e:
+                    logger.debug(f"Chunk deduplication encountered issue, using original: {e}")
+                    cleaned_chunk = chunk_text
+
+                if cleaned_chunk:
+                    await websocket.send_json({
+                        "type": "transcription_chunk",
+                        "text": cleaned_chunk,
+                        "chunk_index": i,
+                        "total_chunks": total_chunks,
+                        "is_final": i == total_chunks - 1
+                    })
+                    transcripts.append(cleaned_chunk)
             
             # Calculate progress metrics
             chunk_duration = time.time() - chunk_start
@@ -420,6 +455,10 @@ async def transcribe_with_incremental_output(
         
         # Join transcripts with space
         full_transcript = ' '.join(transcripts)
+
+        # Apply text deduplication to remove any duplicate sentences or word sequences
+        full_transcript = clean_transcription_text(full_transcript)
+
         return full_transcript, detected_language
         
     except Exception as e:
@@ -441,6 +480,14 @@ async def transcribe_with_incremental_output(
             detected_language = language or 'unknown'
         
         if transcript:
+            # Apply dedup to fallback single transcript
+            try:
+                transcript = remove_repeated_word_sequences(transcript, min_sequence_length=5)
+                sentences = split_into_sentences(transcript)
+                sentences = remove_consecutive_duplicate_sentences(sentences)
+                transcript = ''.join(sentences)
+            except Exception:
+                pass
             await websocket.send_json({
                 "type": "transcription_chunk",
                 "text": transcript,
@@ -530,6 +577,9 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
         await websocket.send_json({"error": f"Failed to load model {processor.model_name}: {str(e)}"})
         return
     
+    # Initialize deduplicator for this streaming session
+    deduper = IncrementalDeduplicator(context_window=20, min_sequence_length=5)
+
     try:
         while processor.is_running or not processor.audio_queue.empty():
             try:
@@ -638,14 +688,25 @@ async def transcribe_audio_stream(websocket: WebSocket, processor: AudioStreamPr
                             detected_language = processor.language or 'he'
 
                     
-                    # Send transcription to client
+                    # Send transcription to client (apply per-chunk dedup)
                     if transcription_text:
-                        await websocket.send_json({
-                            "type": "transcription",
-                            "text": transcription_text,
-                            "language": detected_language
-                        })
-                        logger.info(f"✓ Sent transcription ({len(transcription_text)} chars): {transcription_text[:100]}...")
+                        try:
+                            cleaned_chunk = deduper.process_chunk(transcription_text)
+                            cleaned_chunk = remove_repeated_word_sequences(cleaned_chunk, min_sequence_length=5)
+                            sentences = split_into_sentences(cleaned_chunk)
+                            sentences = remove_consecutive_duplicate_sentences(sentences)
+                            cleaned_chunk = ''.join(sentences)
+                        except Exception as e:
+                            logger.debug(f"Stream chunk dedup failed, using original: {e}")
+                            cleaned_chunk = transcription_text
+
+                        if cleaned_chunk:
+                            await websocket.send_json({
+                                "type": "transcription",
+                                "text": cleaned_chunk,
+                                "language": detected_language
+                            })
+                            logger.info(f"✓ Sent transcription ({len(cleaned_chunk)} chars): {cleaned_chunk[:100]}...")
                     else:
                         logger.warning("⚠ No transcription text extracted from audio chunk")
                     
@@ -749,6 +810,10 @@ async def transcribe_vod_with_deepgram(websocket: WebSocket, url: str, language:
 
             # Extract transcript and metadata from response
             transcript = response.results.channels[0].alternatives[0].transcript.strip()
+
+            # Apply text deduplication to remove any duplicate sentences or word sequences
+            transcript = clean_transcription_text(transcript)
+
             # Safely extract request_id from metadata (it's an object, not a dict)
             request_id = None
             try:
@@ -876,6 +941,9 @@ async def transcribe_vod_with_deepgram(websocket: WebSocket, url: str, language:
                 pass
 
             if transcript:
+                # Apply text deduplication to remove any duplicate sentences or word sequences
+                transcript = clean_transcription_text(transcript)
+
                 # Log detailed success info
                 log_parts = [f"✓ Transcription complete ({len(transcript)} chars)"]
                 if detected_language:
@@ -923,10 +991,21 @@ async def transcribe_vod_with_deepgram(websocket: WebSocket, url: str, language:
                 logger.info(f"Sending transcript in {len(transcript_chunks)} chunks")
                 await websocket.send_json({"type": "status", "message": f"📝 Transcription complete! Sending {len(transcript)} characters..."})
 
+                # Initialize deduper for per-chunk cleaning across VOD chunks
+                vod_deduper = IncrementalDeduplicator(context_window=20, min_sequence_length=5)
+
                 for i, chunk in enumerate(transcript_chunks):
+                    try:
+                        cleaned_chunk = vod_deduper.process_chunk(chunk)
+                        cleaned_chunk = remove_repeated_word_sequences(cleaned_chunk, min_sequence_length=5)
+                        sentences = split_into_sentences(cleaned_chunk)
+                        sentences = remove_consecutive_duplicate_sentences(sentences)
+                        cleaned_chunk = ''.join(sentences)
+                    except Exception:
+                        cleaned_chunk = chunk
                     response_data = {
                         "type": "transcription",
-                        "text": chunk,
+                        "text": cleaned_chunk,
                         "language": detected_language or lang
                     }
                     if request_id:
@@ -1066,6 +1145,9 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
         loop = asyncio.get_event_loop()
 
         # Event handlers
+        # Initialize deduper for Deepgram live session (thread-safe usage via callback)
+        dg_deduper = IncrementalDeduplicator(context_window=20, min_sequence_length=5)
+        dedup_lock = threading.Lock()
         # Listen for the connection to open
         connection.on(DG_EVENT_OPEN, lambda *_: logger.info("Deepgram connection opened"))
 
@@ -1083,16 +1165,26 @@ async def transcribe_with_deepgram(websocket: WebSocket, url: str, language: Opt
 
                 try:
                     if ws_open and websocket.client_state == WebSocketState.CONNECTED and not dg_closed_event.is_set():
+                        # Apply stateful, thread-safe deduplication to the sentence
+                        try:
+                            with dedup_lock:
+                                cleaned = dg_deduper.process_chunk(sentence)
+                            cleaned = remove_repeated_word_sequences(cleaned, min_sequence_length=5)
+                            sents = split_into_sentences(cleaned)
+                            sents = remove_consecutive_duplicate_sentences(sents)
+                            cleaned = ''.join(sents)
+                        except Exception:
+                            cleaned = sentence
                         # Schedule the coroutine on the main event loop from this callback thread
                         asyncio.run_coroutine_threadsafe(
                             websocket.send_json({
                                 "type": "transcription",
-                                "text": sentence,
+                                "text": cleaned,
                                 "language": language or os.getenv("DEEPGRAM_LANGUAGE", "en-US")
                             }),
                             loop
                         )
-                        logger.info(f"✓ Sent Deepgram transcription: {sentence[:100]}...")
+                        logger.info(f"✓ Sent Deepgram transcription: {cleaned[:100]}...")
                 except Exception as e:
                     logger.error(f"Failed to send Deepgram transcription: {e}")
 

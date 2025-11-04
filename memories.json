@@ -1748,7 +1748,24 @@
       "lastAccessed": "2025-11-04T12:52:19.530Z",
       "lastVerified": "2025-11-04T12:52:19.530Z",
       "status": "fresh"
+    },
+    {
+      "id": "mem_1762260754141_3a7j4zifp",
+      "content": "Key findings from initial code review:\n1. YTDLP_CHUNK_OVERLAP setting exists (line 32 in settings.py) with default value of 1 second\n2. split_audio_for_incremental() in transcription.py line 260 explicitly sets overlap_seconds=0 to avoid duplication\n3. split_audio_into_chunks() in audio_processor.py uses overlap (lines 609-650)\n4. Parallel transcription path in websocket.py (lines 281-336) uses split_audio_into_chunks WITH overlap\n5. Regular incremental transcription (line 359) uses transcribe_with_incremental_output which has NO overlap",
+      "type": "warning",
+      "tags": [
+        "warning",
+        "investigation",
+        "findings",
+        "overlap",
+        "chunking"
+      ],
+      "timestamp": "2025-11-04T12:52:34.141Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-11-04T12:52:34.141Z",
+      "lastVerified": "2025-11-04T12:52:34.141Z",
+      "status": "fresh"
     }
   ],
-  "lastUpdated": "2025-11-04T12:52:19.530Z"
+  "lastUpdated": "2025-11-04T12:52:34.141Z"
 }
