@@ -19,7 +19,7 @@ AUDIO_QUEUE_SIZE = 200  # Large queue to handle slow models (Ivrit, large models
 # Upload configuration
 UPLOAD_FOLDER = Path('uploads')
 UPLOAD_FOLDER.mkdir(exist_ok=True)
-MAX_CONTENT_LENGTH = 500 * 1024 * 1024  # 500MB max file size
+# No size limit - allow unlimited file size for audio uploads
 
 # Streaming configuration
 CHUNK_SIZE = 8192  # Bytes for streaming

@@ -4,7 +4,7 @@
 
 **Live Audio Stream Transcription** is a production-ready, real-time audio transcription application with a **newly refactored modular architecture**. It processes audio from various sources (URLs, streams, video platforms) and transcribes them using multiple AI engines. Built with FastAPI, it supports cloud-based (Deepgram Nova-3) and local (OpenAI Whisper, Faster-Whisper, Ivrit) transcription models with comprehensive progress tracking, speaker diarization, and GPU acceleration.
 
-**Version:** 3.0 (Modular Architecture)
+**Version:** 4.0 (AI Enhancements)
 **Language:** Python 3.11+
 **Framework:** FastAPI with WebSocket support
 **Architecture:** Modular with 17 specialized modules
@@ -13,6 +13,35 @@
 ---
 
 ## 🏗️ Modular Architecture (v3.0)
+
+## 🔥 AI Enhancements (v4.0)
+
+### New Features
+- **Video Summarization**: Generate concise, structured summaries of the transcribed content with key points, topics, and actions.
+- **Stateful Deduplication**: Remove duplicated words and sentences, including across chunk boundaries, to produce clean, readable transcripts.
+- **Translation**: Translate transcripts into a target language while preserving sentence structure and formatting.
+
+### Quality Pipeline
+- **Boundary-Aware Cleaning**: Incremental deduplication maintains context across chunks in live and VOD flows.
+- **Intra-Chunk Cleanup**: Repeated word sequence removal and consecutive duplicate sentence elimination.
+- **Post-Processing Actions**: Summarize and translate after transcription with API or UI triggers.
+
+### Where It Runs
+- `services/transcription.py`
+  - `transcribe_with_incremental_output` (short and long audio)
+  - `transcribe_audio_stream` (local live streaming)
+  - `transcribe_vod_with_deepgram` (VOD via Deepgram)
+  - `transcribe_with_deepgram` (Deepgram live streaming)
+- `services/summary.py` — summarization service
+- `services/translation.py` — translation service
+
+### API Additions
+- `POST /api/summarize` — summarize a transcript
+- `POST /api/translate` — translate a transcript
+  See `API.md` for payloads and examples.
+
+> v4.0 builds on the v3.0 modular architecture and focuses on output quality and multilingual reach.
+
 
 ### Architectural Transformation
 
@@ -570,5 +599,5 @@ The transformation from a 3,618-line monolith to a 42-line entry point with 17 s
 ---
 
 **Last Updated:** November 2024
-**Version:** 3.0 (Modular Architecture)
+**Version:** 4.0 (AI Enhancements)
 **Maintainers:** Development Team

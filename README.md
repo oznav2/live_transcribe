@@ -1,8 +1,23 @@
-# 🎙️ VibeGram - Live Audio Stream Transcription (Modular Architecture v3.0)
+# 🎙️ VibeGram - Live Audio Stream Transcription (AI Enhancements v4.0)
 
 A real-time audio transcription application with a **newly refactored modular architecture** that streams audio from URLs (m3u8, video links, audio files) and transcribes them live using multiple transcription engines: **Deepgram Nova-3** (cloud), **Ivrit** (Hebrew-optimized), or **OpenAI Whisper** (local). Inspired by [Vibe](https://github.com/thewh1teagle/vibe).
 
 ![Live Transcription Screenshot](static/vibegram.png)
+
+## 🚨 Major Update: AI Enhancements (v4.0)
+
+This release focuses on end-to-end output quality and multilingual reach.
+
+### New in v4.0
+- **Video Summarization**: Generate concise, structured summaries of the
+  transcribed content to quickly grasp key points, topics, and actions.
+- **Stateful Deduplication**: Clean repeated words and sentences, including
+  across chunk boundaries, for crisp, readable transcripts.
+- **Translation**: Translate transcribed text to your target language while
+  preserving formatting and sentence structure.
+
+> v4.0 builds on the v3.0 modular foundation. The sections below retain the
+> architecture details introduced in v3.0 while highlighting the new features.
 
 ## 🚨 Major Update: Modular Architecture (v3.0)
 
@@ -29,6 +44,15 @@ The application has been completely refactored from a monolithic 3,618-line sing
 - **Audio Caching**: Intelligent caching system reduces CPU usage by 60% for repeated content
 - **VOD Detection**: Automatically detects Video-on-Demand vs live streams and optimizes transcription path
 
+### AI Enhancements
+- **Summarization**: One-click or API-triggered summarization of the full
+  transcript with structured sections and key takeaways
+- **Deduplication**: Stateful per-chunk cleaning using overlap-aware
+  deduplication, removal of repeated word sequences, and consecutive duplicate
+  sentences
+- **Translation**: Translate transcripts to selected languages with accurate
+  sentence boundaries and formatting
+
 ### User Experience
 - **Real-time Progress Tracking**:
   - Download progress with %, MB, speed, and ETA
@@ -41,6 +65,8 @@ The application has been completely refactored from a monolithic 3,618-line sing
 - **Model Selection**: Choose your transcription model from the UI
 - **Beautiful Web UI**: Modern, responsive interface with real-time updates and dark theme
 - **Enhanced Error Messages**: Detailed error reporting with helpful troubleshooting suggestions
+- **Post-Transcription Actions**: Summarize and translate results directly from
+  the interface or via API
 
 ### Performance & DevOps
 - **Modular Architecture**: Clean separation of concerns with 17 specialized modules
@@ -115,6 +141,8 @@ webapp/
 │   ├── audio_processor.py    # Audio download, streaming, and processing
 │   ├── transcription.py      # All transcription services (1208 lines)
 │   ├── diarization.py        # Speaker diarization service
+│   ├── summary.py            # Transcript summarization service
+│   ├── translation.py        # Transcript translation service
 │   └── video_metadata.py     # YouTube metadata extraction
 ├── utils/
 │   ├── validators.py         # URL and input validation
@@ -148,6 +176,8 @@ webapp/
 | **services/transcription.py** | 1208 | All transcription logic (Whisper, Deepgram, streaming) |
 | **services/audio_processor.py** | 670 | Audio download, FFmpeg processing, streaming |
 | **services/diarization.py** | 241 | Speaker identification and segmentation |
+| **services/summary.py** | — | Summarize transcripts into concise, structured outputs |
+| **services/translation.py** | — | Translate transcripts to target languages |
 | **models/loader.py** | 180 | Thread-safe model loading with caching |
 | **utils/cache.py** | 242 | Cache management for audio and downloads |
 
@@ -170,7 +200,9 @@ webapp/
 4. **Enable Diarization** (Optional): Toggle to identify different speakers
 5. **Click "Start Transcription"**: The application will begin streaming and transcribing
 6. **Watch Live Results**: Transcription appears in real-time as audio is processed
-7. **Export**: Use "Copy Text" or "Download" buttons to save your transcription
+7. **Summarize & Translate**: Use the UI actions to summarize or translate the
+   transcript, or call the corresponding API endpoints
+8. **Export**: Use "Copy Text" or "Download" buttons to save your transcription
 
 ## ⚙️ Configuration
 
@@ -218,6 +250,10 @@ CACHE_MAX_AGE_HOURS=24
 
 # Server Configuration
 PORT=8009
+
+# Optional Feature Settings
+# TARGET_TRANSLATION_LANGUAGE=en
+# SUMMARIZATION_ENABLED=true
 ```
 
 ## 🛠️ Development Setup (Without Docker)
@@ -256,6 +292,8 @@ Access at: `http://localhost:8009`
 - `POST /api/cache/clear` - Clear cache
 - `GET /api/download-cache/stats` - Download cache statistics
 - `POST /api/download-cache/clear` - Clear download cache
+- `POST /api/summarize` - Summarize a transcript (see API.md)
+- `POST /api/translate` - Translate a transcript (see API.md)
 
 ### WebSocket API
 
@@ -278,6 +316,8 @@ WebSocket Message Protocol:
   "type": "transcription",    // Transcription text
   "type": "transcription_chunk", // Incremental chunk
   "type": "transcription_progress", // Progress update
+  "type": "summary",          // Summary result (optional)
+  "type": "translation",      // Translation result (optional)
   "type": "complete",         // Completion signal
   "type": "error"            // Error message
 }
@@ -327,7 +367,13 @@ All I/O operations use async/await for non-blocking execution:
 
 ## 🚀 Recent Updates
 
-### v3.0 - Modular Architecture (Current)
+### v4.0 - AI Enhancements (Current)
+- ✅ **Summarization**: Structured summaries of transcripts
+- ✅ **Stateful Deduplication**: Overlap-aware, sentence-level cleaning
+- ✅ **Translation**: Multilingual output with preserved formatting
+- ✅ **Documentation Updates**: README and project summary updated for v4.0
+
+### v3.0 - Modular Architecture
 - ✅ **Complete Refactoring**: From 3,618 lines monolith to 42 lines entry point
 - ✅ **17 Specialized Modules**: Clean separation of concerns
 - ✅ **Zero Breaking Changes**: 100% backward compatibility

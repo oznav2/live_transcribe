@@ -59,6 +59,79 @@ async def websocket_transcribe(websocket: WebSocket):
     try:
         # Receive transcription request
         data = await websocket.receive_json()
+
+        # ISOLATED CODE PATH: Handle uploaded file (takes precedence over URL)
+        upload_file_id = data.get("upload_file_id")
+        if upload_file_id:
+            logger.info(f"Processing uploaded file: {upload_file_id}")
+
+            # Get parameters
+            language = data.get("language")
+            model_name = data.get("model", "whisper-v3-turbo")
+            enable_diarization = data.get("diarization", False)
+            uploaded_filename = data.get("filename", "uploaded_file")
+
+            # Find uploaded file
+            from config.constants import UPLOAD_FOLDER
+            upload_path = Path(UPLOAD_FOLDER) / upload_file_id
+            audio_file = str(upload_path)
+
+            if not upload_path.exists():
+                await websocket.send_json({"error": f"Uploaded file not found: {upload_file_id}"})
+                return
+
+            # Transcribe uploaded file using existing transcription function
+            await websocket.send_json({"type": "status", "message": f"Processing uploaded file: {uploaded_filename}..."})
+
+            try:
+                # Load model (same as URL flow)
+                model = load_model(model_name)
+                model_config = MODEL_CONFIGS[model_name]
+
+                # Check if diarization is requested
+                if enable_diarization:
+                    await websocket.send_json({"type": "status", "message": "🎭 Transcribing with speaker diarization..."})
+                    logger.info(f"Starting diarization for uploaded file: {upload_file_id}")
+
+                    diarized_segments, detected_language = await transcribe_with_diarization(
+                        model, model_config, audio_file, language, websocket, model_name
+                    )
+
+                    # Diarization already sends incremental chunks, just send completion
+                    await websocket.send_json({
+                        "type": "complete",
+                        "message": "Transcription with diarization complete",
+                        "detected_language": detected_language
+                    })
+                else:
+                    # Use regular incremental transcription
+                    await websocket.send_json({"type": "status", "message": f"Transcribing {uploaded_filename}..."})
+
+                    transcription_text, detected_language = await transcribe_with_incremental_output(
+                        model, model_config, audio_file, language, websocket, model_name
+                    )
+
+                    # Send complete message
+                    await websocket.send_json({
+                        "type": "complete",
+                        "message": "Transcription complete",
+                        "detected_language": detected_language
+                    })
+
+            except Exception as e:
+                logger.error(f"Failed to transcribe uploaded file: {e}", exc_info=True)
+                await websocket.send_json({"error": f"Transcription failed: {str(e)}"})
+            finally:
+                # Clean up uploaded file after transcription
+                try:
+                    upload_path.unlink()
+                    logger.info(f"Cleaned up uploaded file: {upload_file_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up uploaded file {upload_file_id}: {e}")
+
+            return  # EXIT - Never touches URL flow below
+
+        # EXISTING URL-BASED FLOW (unchanged)
         url = sanitize_url(data.get("url"))
         language = data.get("language")
         model_name = data.get("model", "whisper-v3-turbo")  # Default to multilingual model

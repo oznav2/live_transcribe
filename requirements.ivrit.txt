@@ -28,6 +28,10 @@ scipy>=1.7.0,<1.14.0
 # FFmpeg Python wrapper
 ffmpeg-python==0.2.0
 
+# Audio processing for fast chunk splitting
+librosa>=0.10.0
+soundfile>=0.12.0
+
 # URL Download & Processing
 yt-dlp>=2024.10.7
 

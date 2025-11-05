@@ -1,16 +1,17 @@
 """API routes for the transcription service."""
 import os
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from config.constants import (
-    CACHE_DIR, DOWNLOAD_CACHE_DIR, CACHE_MAX_AGE_HOURS
+    CACHE_DIR, DOWNLOAD_CACHE_DIR, CACHE_MAX_AGE_HOURS, UPLOAD_FOLDER
 )
 from config.constants import CACHE_ENABLED
 from config.availability import MODEL_SIZE
@@ -255,6 +256,61 @@ async def clear_download_cache():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/upload")
+async def upload_audio_file(file: UploadFile = File(...)):
+    """
+    Upload audio file for transcription (no size limit).
+
+    Streams file to disk in chunks for memory efficiency.
+    Returns file ID for use in transcription request.
+    """
+    try:
+        # Validate file extension
+        valid_extensions = ['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac']
+        file_ext = os.path.splitext(file.filename)[1].lower()
+
+        if file_ext not in valid_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Supported formats: {', '.join(valid_extensions)}"
+            )
+
+        # Generate unique file ID (hash + timestamp)
+        timestamp = int(time.time() * 1000)
+
+        # Create upload folder if it doesn't exist
+        upload_folder = Path(UPLOAD_FOLDER)
+        upload_folder.mkdir(parents=True, exist_ok=True)
+
+        # Generate file path with timestamp and original extension
+        file_id = f"upload_{timestamp}{file_ext}"
+        file_path = upload_folder / file_id
+
+        # Stream file to disk (1MB chunks for memory efficiency)
+        chunk_size = 1024 * 1024  # 1MB
+        total_size = 0
+
+        with open(file_path, 'wb') as f:
+            while chunk := await file.read(chunk_size):
+                f.write(chunk)
+                total_size += len(chunk)
+
+        logger.info(f"File uploaded successfully: {file_id} ({total_size / 1024 / 1024:.2f} MB)")
+
+        return {
+            "success": True,
+            "file_id": file_id,
+            "filename": file.filename,
+            "size_mb": round(total_size / 1024 / 1024, 2)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"File upload failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
 @router.post("/api/translate")

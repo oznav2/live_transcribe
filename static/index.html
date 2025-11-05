@@ -39,6 +39,56 @@
                 >
             </div>
 
+            <!-- Audio File Upload Section -->
+            <div class="upload-container">
+                <div id="uploadZone" class="upload-zone">
+                    <div class="upload-zone-content">
+                        <div class="upload-icon">☁️</div>
+                        <div class="upload-text">Drag audio files here</div>
+                        <div class="upload-hint">Or, if you prefer...</div>
+                        <div class="upload-browse-container">
+                            <button class="upload-browse-btn" type="button">Browse...</button>
+                            <span class="upload-no-file" id="uploadNoFile">No files selected.</span>
+                        </div>
+                        <div class="upload-formats">Supported: MP3, WAV, OGG, M4A, FLAC, AAC</div>
+                    </div>
+                </div>
+
+                <!-- Hidden file input -->
+                <input type="file" id="audioFileInput" accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,audio/*">
+
+                <!-- Upload Progress -->
+                <div id="uploadProgressContainer" class="upload-progress-container">
+                    <div class="upload-progress-info">
+                        <span id="uploadProgressText">Uploading...</span>
+                        <span id="uploadProgressPercent">0%</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div id="uploadProgressBar" class="progress-bar-fill upload" style="width: 0%"></div>
+                    </div>
+                    <div class="upload-progress-info" style="margin-top: 8px;">
+                        <span id="uploadSpeed"></span>
+                        <span id="uploadETA"></span>
+                    </div>
+                </div>
+
+                <!-- Uploaded File Display -->
+                <div id="uploadedFileDisplay" style="display: none;">
+                    <div class="uploaded-file">
+                        <div class="uploaded-file-info">
+                            <div class="file-icon">🎵</div>
+                            <div class="file-details">
+                                <div class="file-name" id="uploadedFileName"></div>
+                                <div class="file-size" id="uploadedFileSize"></div>
+                            </div>
+                        </div>
+                        <button id="removeFileBtn" class="icon-btn-small">
+                            <i class="fas fa-times"></i> Remove
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Video Information Section -->
             <div id="videoInfoSection" class="video-info-section" style="display: none;">
                 <div class="video-info-header">
@@ -374,6 +424,24 @@
         const translationContent = document.getElementById('translationContent');
         const translationLanguages = document.getElementById('translationLanguages');
 
+        // Upload elements
+        const uploadZone = document.getElementById('uploadZone');
+        const audioFileInput = document.getElementById('audioFileInput');
+        const uploadProgressContainer = document.getElementById('uploadProgressContainer');
+        const uploadProgressBar = document.getElementById('uploadProgressBar');
+        const uploadProgressText = document.getElementById('uploadProgressText');
+        const uploadProgressPercent = document.getElementById('uploadProgressPercent');
+        const uploadSpeed = document.getElementById('uploadSpeed');
+        const uploadETA = document.getElementById('uploadETA');
+        const uploadedFileDisplay = document.getElementById('uploadedFileDisplay');
+        const uploadedFileName = document.getElementById('uploadedFileName');
+        const uploadedFileSize = document.getElementById('uploadedFileSize');
+        const removeFileBtn = document.getElementById('removeFileBtn');
+
+        // Upload state
+        let uploadedFileId = null;
+        let uploadedFilename = null;
+
         // Translation state
         let detectedLanguage = null;
         let currentUrl = null;
@@ -381,6 +449,192 @@
         function useSampleUrl(url) {
             urlInput.value = url;
         }
+
+        // ===== UPLOAD FUNCTIONALITY =====
+
+        // Format file size
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        // Format upload speed
+        function formatSpeed(bytesPerSecond) {
+            if (bytesPerSecond === 0) return '0 KB/s';
+            const k = 1024;
+            const mbps = bytesPerSecond / k / k;
+            if (mbps >= 1) {
+                return mbps.toFixed(2) + ' MB/s';
+            } else {
+                return (bytesPerSecond / k).toFixed(2) + ' KB/s';
+            }
+        }
+
+        // Format ETA
+        function formatETA(seconds) {
+            if (!isFinite(seconds) || seconds <= 0) return 'Calculating...';
+            if (seconds < 60) return Math.round(seconds) + 's';
+            const minutes = Math.floor(seconds / 60);
+            const secs = Math.round(seconds % 60);
+            return `${minutes}m ${secs}s`;
+        }
+
+        // Validate file type
+        function isValidAudioFile(file) {
+            const validExtensions = ['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac'];
+            const fileName = file.name.toLowerCase();
+            return validExtensions.some(ext => fileName.endsWith(ext));
+        }
+
+        // Handle file selection
+        async function handleFileSelect(file) {
+            if (!file) return;
+
+            // Validate file type
+            if (!isValidAudioFile(file)) {
+                alert('Invalid file type. Please select an audio file (MP3, WAV, OGG, M4A, FLAC, AAC).');
+                return;
+            }
+
+            // Hide upload zone, show progress
+            uploadZone.style.display = 'none';
+            uploadProgressContainer.style.display = 'block';
+            uploadedFileDisplay.style.display = 'none';
+
+            // Upload file
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const xhr = new XMLHttpRequest();
+
+            // Track upload progress
+            let startTime = Date.now();
+            let lastLoaded = 0;
+            let lastTime = startTime;
+
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    uploadProgressBar.style.width = percent + '%';
+                    uploadProgressPercent.textContent = percent + '%';
+                    uploadProgressText.textContent = `Uploading ${file.name}...`;
+
+                    // Calculate speed and ETA
+                    const currentTime = Date.now();
+                    const timeDiff = (currentTime - lastTime) / 1000; // seconds
+                    const loadedDiff = e.loaded - lastLoaded;
+
+                    if (timeDiff > 0.5) { // Update every 0.5 seconds
+                        const speed = loadedDiff / timeDiff;
+                        const remaining = e.total - e.loaded;
+                        const eta = remaining / speed;
+
+                        uploadSpeed.textContent = formatSpeed(speed);
+                        uploadETA.textContent = 'ETA: ' + formatETA(eta);
+
+                        lastLoaded = e.loaded;
+                        lastTime = currentTime;
+                    }
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                if (xhr.status === 200) {
+                    const response = JSON.parse(xhr.responseText);
+
+                    // Store uploaded file info
+                    uploadedFileId = response.file_id;
+                    uploadedFilename = response.filename;
+
+                    // Show uploaded file display
+                    uploadProgressContainer.style.display = 'none';
+                    uploadedFileDisplay.style.display = 'block';
+                    uploadedFileName.textContent = response.filename;
+                    uploadedFileSize.textContent = formatFileSize(file.size);
+
+                    // Clear URL input (uploaded file takes precedence)
+                    urlInput.value = '';
+
+                    console.log('File uploaded successfully:', response);
+                } else {
+                    alert('Upload failed: ' + xhr.statusText);
+                    resetUploadUI();
+                }
+            });
+
+            xhr.addEventListener('error', () => {
+                alert('Upload failed. Please try again.');
+                resetUploadUI();
+            });
+
+            xhr.open('POST', '/api/upload');
+            xhr.send(formData);
+        }
+
+        // Reset upload UI
+        function resetUploadUI() {
+            uploadZone.style.display = 'block';
+            uploadProgressContainer.style.display = 'none';
+            uploadedFileDisplay.style.display = 'none';
+            uploadProgressBar.style.width = '0%';
+            uploadProgressPercent.textContent = '0%';
+            uploadProgressText.textContent = 'Uploading...';
+            uploadSpeed.textContent = '';
+            uploadETA.textContent = '';
+            uploadedFileId = null;
+            uploadedFilename = null;
+        }
+
+        // Remove uploaded file
+        function removeUploadedFile() {
+            resetUploadUI();
+        }
+
+        // Browse button click handler
+        document.querySelector('.upload-browse-btn').addEventListener('click', (e) => {
+            e.stopPropagation(); // Prevent triggering upload zone click
+            audioFileInput.click();
+        });
+
+        // Upload zone click handler (entire zone is clickable)
+        uploadZone.addEventListener('click', () => {
+            audioFileInput.click();
+        });
+
+        // File input change handler
+        audioFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFileSelect(e.target.files[0]);
+            }
+        });
+
+        // Drag and drop handlers
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('drag-over');
+        });
+
+        uploadZone.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('drag-over');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('drag-over');
+
+            if (e.dataTransfer.files.length > 0) {
+                handleFileSelect(e.dataTransfer.files[0]);
+            }
+        });
+
+        // Remove file button handler
+        removeFileBtn.addEventListener('click', removeUploadedFile);
+
+        // ===== END UPLOAD FUNCTIONALITY =====
 
         function updateStatus(status, message) {
             statusDot.className = `status-dot ${status}`;
@@ -1029,10 +1283,163 @@
             hideStageIndicator();
         }
 
+        function startUploadedFileTranscription() {
+            // Transcribe uploaded file (ISOLATED CODE PATH - doesn't touch URL flow)
+            const language = languageSelect.value || null;
+            const model = modelSelect.value || 'whisper-v3-turbo';
+            const diarization = document.getElementById('diarizationToggle').checked;
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/transcribe`);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected for uploaded file');
+                updateStatus('connecting', 'Processing uploaded file...');
+
+                // Set RTL mode if Hebrew model or language is selected
+                if (shouldUseRTL(model, language, null)) {
+                    setTranscriptionDirection(true);
+                } else {
+                    setTranscriptionDirection(false);
+                }
+
+                // Send uploaded file info instead of URL
+                ws.send(JSON.stringify({
+                    upload_file_id: uploadedFileId,
+                    filename: uploadedFilename,
+                    language,
+                    model,
+                    diarization
+                }));
+
+                startBtn.classList.add('hidden');
+                stopBtn.classList.remove('hidden');
+                languageSelect.disabled = true;
+                modelSelect.disabled = true;
+                scopeSelect.disabled = true;
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'status') {
+                    updateStatus('connecting', data.message);
+
+                    // Hide download progress when moving to transcription
+                    if (data.message.includes('transcrib') || data.message.includes('Transcrib')) {
+                        hideDownloadProgress();
+                        updateStage(2, 'active');
+                    }
+                } else if (data.type === 'transcription_chunk') {
+                    // Handle incremental transcription chunks
+                    addTranscription(data.text);
+
+                    // Update progress if provided
+                    if (data.chunk_index !== undefined && data.total_chunks !== undefined) {
+                        const percent = ((data.chunk_index + 1) / data.total_chunks * 100).toFixed(1);
+                        updateStatus('active', `Transcribing: Chunk ${data.chunk_index + 1}/${data.total_chunks} (${percent}%)`);
+                    }
+
+                    // Show progress panels if not visible
+                    if (!document.getElementById('transcriptionProgress').classList.contains('active')) {
+                        showStageIndicator();
+                        updateStage(1, 'completed');
+                        updateStage(2, 'completed');
+                        updateStage(3, 'active');
+                    }
+                } else if (data.type === 'transcription_progress') {
+                    // Handle detailed transcription progress with percentage and ETA
+                    if (data.percentage !== undefined && data.eta_seconds !== undefined) {
+                        const statusMsg = `Transcribing: ${data.percentage.toFixed(1)}% (ETA: ${formatTime(data.eta_seconds)})`;
+                        updateStatus('active', statusMsg);
+
+                        // Update progress bar if we have one
+                        updateTranscriptionProgress({
+                            percent: data.percentage,
+                            audio_duration: data.audio_duration,
+                            elapsed_seconds: data.elapsed_seconds,
+                            speed: data.speed || 1.0
+                        });
+                    }
+                } else if (data.type === 'transcription_status') {
+                    // Handle transcription status updates (indeterminate with elapsed time)
+                    updateTranscriptionStatus(data);
+                    updateStatus('active', data.message || 'Transcribing...');
+                } else if (data.type === 'transcription_preview') {
+                    // Handle incremental preview text (every 4 chunks)
+                    showTranscriptionPreview(data.text);
+                } else if (data.type === 'transcription') {
+                    updateStatus('active', 'Transcribing...');
+                    addTranscription(data.text);
+
+                    // Also show in preview if panels are visible
+                    if (!document.getElementById('transcriptionProgress').classList.contains('active')) {
+                        showStageIndicator();
+                        updateStage(1, 'completed');
+                        updateStage(2, 'completed');
+                        updateStage(3, 'active');
+                    }
+                } else if (data.type === 'complete') {
+                    updateStatus('idle', 'Transcription complete');
+                    hideTranscriptionProgress();
+
+                    // Mark all stages as completed
+                    updateStage(1, 'completed');
+                    updateStage(2, 'completed');
+                    updateStage(3, 'completed');
+
+                    // Capture detected language for translation
+                    if (data.detected_language) {
+                        detectedLanguage = data.detected_language;
+                        console.log('Detected language:', detectedLanguage);
+                    }
+
+                    // Show translate button if language detected and text available
+                    if (detectedLanguage && transcriptionText.trim()) {
+                        showTranslateButton(detectedLanguage);
+                    }
+
+                    setTimeout(() => {
+                        hideStageIndicator();
+                    }, 2000);
+
+                    stopTranscription();
+                } else if (data.error) {
+                    updateStatus('error', `Error: ${data.error}`);
+                    alert(`Error: ${data.error}`);
+                    resetProgressPanels();
+                    stopTranscription();
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                updateStatus('error', 'Connection error');
+                alert('Connection error. Please try again.');
+                resetProgressPanels();
+                stopTranscription();
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket closed');
+                if (statusDot.classList.contains('active') || statusDot.classList.contains('connecting')) {
+                    updateStatus('idle', 'Connection closed');
+                }
+                stopTranscription();
+            };
+        }
+
         function startTranscription() {
+            // Check if user uploaded a file (takes precedence over URL)
+            if (uploadedFileId) {
+                startUploadedFileTranscription();
+                return;
+            }
+
+            // Original URL-based transcription flow
             const url = urlInput.value.trim();
             if (!url) {
-                alert('Please enter a valid URL');
+                alert('Please enter a valid URL or upload an audio file');
                 return;
             }
 
@@ -1047,14 +1454,14 @@
             ws.onopen = () => {
                 console.log('WebSocket connected');
                 updateStatus('connecting', 'Connecting to stream...');
-                
+
                 // Set RTL mode if Hebrew model or language is selected
                 if (shouldUseRTL(model, language, null)) {
                     setTranscriptionDirection(true);
                 } else {
                     setTranscriptionDirection(false);
                 }
-                
+
                 ws.send(JSON.stringify({ url, language, model, captureMode, diarization }));
                 
                 startBtn.classList.add('hidden');

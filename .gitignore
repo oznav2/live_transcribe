@@ -68,3 +68,12 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+ 
+# Project-specific ignores
+context_generator_prompt.md
+context_generator_usage.md
+memory_log_prompt.md
+project_summary.md.bak
+
+# Per request: ignore .gitignore itself (note: has no effect if already tracked)
+.gitignore

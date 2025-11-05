@@ -456,8 +456,8 @@ async def transcribe_with_incremental_output(
         # Join transcripts with space
         full_transcript = ' '.join(transcripts)
 
-        # Apply text deduplication to remove any duplicate sentences or word sequences
-        full_transcript = clean_transcription_text(full_transcript)
+        # NOTE: Deduplication already applied during incremental chunking (lines 367-377)
+        # No need for redundant batch deduplication here - it causes 20+ minute delays
 
         return full_transcript, detected_language
         
