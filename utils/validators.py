@@ -71,7 +71,7 @@ def should_use_ytdlp(url: str) -> bool:
         'facebook.com', 'twitter.com', 'twitch.tv', 'tiktok.com',
         'instagram.com', 'reddit.com'
     ]
-    
+
     # Special handling for YouTube URLs with various formats
     youtube_patterns = [
         r'youtube\.com/watch\?v=',
@@ -80,16 +80,33 @@ def should_use_ytdlp(url: str) -> bool:
         r'youtube\.com/v/',
         r'm\.youtube\.com'
     ]
-    
+
     url_lower = url.lower()
-    
+
     # Check standard patterns
     if any(pattern in url_lower for pattern in ytdlp_patterns):
         return True
-    
+
     # Check YouTube regex patterns
     for pattern in youtube_patterns:
         if re.search(pattern, url_lower):
             return True
-    
+
     return False
+
+
+def requires_audio_extraction(url: str) -> bool:
+    """
+    Check if URL requires special audio extraction (103fm, osimhistoria).
+
+    These sites don't work with yt-dlp/ffmpeg directly and need HTML parsing
+    to extract the actual MP3 URL.
+
+    Args:
+        url: URL to check
+
+    Returns:
+        True if URL needs audio extraction, False otherwise
+    """
+    url_lower = url.lower()
+    return '103fm.maariv.co.il' in url_lower or 'osimhistoria.com' in url_lower

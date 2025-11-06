@@ -977,6 +977,13 @@
             return youtubePatterns.some(pattern => pattern.test(url));
         }
 
+        function shouldFetchMetadata(url) {
+            // Fetch metadata for YouTube, osimhistoria, and 103fm URLs
+            return isYouTubeUrl(url) ||
+                   url.toLowerCase().includes('osimhistoria.com') ||
+                   url.toLowerCase().includes('103fm.maariv.co.il');
+        }
+
         async function fetchVideoInfo(url) {
             const section = document.getElementById('videoInfoSection');
             const loading = document.getElementById('videoInfoLoading');
@@ -1015,12 +1022,12 @@
             const loading = document.getElementById('videoInfoLoading');
             const content = document.getElementById('videoInfoContent');
             const error = document.getElementById('videoInfoError');
-            
+
             // Determine language preference
             const selectedModel = modelSelect.value;
             const selectedLanguage = languageSelect.value;
             const isHebrewMode = isHebrewModel(selectedModel) || isHebrewLanguage(selectedLanguage);
-            
+
             // Apply RTL if Hebrew
             if (isHebrewMode) {
                 section.classList.add('rtl');
@@ -1029,18 +1036,60 @@
                 section.classList.remove('rtl');
                 updateVideoInfoLabelsEnglish();
             }
-            
+
             // Update content
             document.getElementById('videoThumbnail').src = data.thumbnail || '';
             document.getElementById('videoTitle').textContent = data.title || 'Unknown Title';
             document.getElementById('videoChannel').textContent = data.channel || 'Unknown Channel';
             document.getElementById('videoDuration').textContent = data.duration_formatted || 'N/A';
             document.getElementById('videoViews').textContent = data.view_count_formatted || 'N/A';
-            
+
             // Show content
             loading.style.display = 'none';
             error.style.display = 'none';
             content.style.display = 'flex';
+
+            // ISSUE 1 & 2 FIX: Display pre-existing transcript and summary immediately for osimhistoria
+            if (data.pre_transcript && data.pre_transcript.trim()) {
+                console.log('Displaying pre-existing transcript immediately');
+                transcriptionText = data.pre_transcript;
+
+                // Set RTL direction for Hebrew content
+                setTranscriptionDirection(true);
+
+                // Clear placeholder and display transcript
+                transcriptionBox.innerHTML = '';
+
+                // Split transcript into paragraphs and display each one
+                const paragraphs = data.pre_transcript.split('\n\n');
+                paragraphs.forEach(paragraph => {
+                    if (paragraph.trim()) {
+                        const div = document.createElement('div');
+                        div.className = 'transcription-line';
+                        div.textContent = paragraph.trim();
+                        div.style.marginBottom = '12px';
+                        transcriptionBox.appendChild(div);
+                    }
+                });
+
+                // Update word count
+                updateWordCount();
+
+                // Show translate button for Hebrew content
+                detectedLanguage = 'he';
+                showTranslateButton('he');
+            }
+
+            if (data.pre_summary && data.pre_summary.trim()) {
+                console.log('Displaying pre-existing summary immediately');
+                const summaryContent = document.getElementById('summaryContent');
+                const summarySection = document.getElementById('summarySection');
+
+                if (summaryContent && summarySection) {
+                    summaryContent.textContent = data.pre_summary;
+                    summarySection.style.display = 'block';
+                }
+            }
         }
 
         function updateVideoInfoLabelsHebrew() {
@@ -1088,13 +1137,13 @@
                 hideVideoInfo();
                 return;
             }
-            
-            // Check if URL is YouTube
-            if (!isYouTubeUrl(url)) {
+
+            // Check if URL should fetch metadata (YouTube, osimhistoria, 103fm)
+            if (!shouldFetchMetadata(url)) {
                 hideVideoInfo();
                 return;
             }
-            
+
             // Debounce: Wait 500ms after user stops typing
             urlDebounceTimer = setTimeout(() => {
                 fetchVideoInfo(url);
@@ -1289,6 +1338,29 @@
             const model = modelSelect.value || 'whisper-v3-turbo';
             const diarization = document.getElementById('diarizationToggle').checked;
 
+            // Clear previous transcription content if re-transcribing
+            if (transcriptionText.trim()) {
+                console.log('Clearing previous transcription for re-transcription');
+                transcriptionText = '';
+                transcriptionBox.innerHTML = `
+                    <div class="transcription-empty">
+                        <i class="fas fa-microphone"></i>
+                        <div>Transcription will appear here...</div>
+                    </div>
+                `;
+                updateWordCount();
+
+                // Hide translation and summary sections
+                translationSection.classList.add('hidden');
+                const summarySection = document.getElementById('summarySection');
+                if (summarySection) {
+                    summarySection.classList.add('hidden');
+                }
+            }
+
+            // Reset progress panels to show fresh progress
+            resetProgressPanels();
+
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${protocol}//${window.location.host}/ws/transcribe`);
 
@@ -1448,6 +1520,29 @@
             const captureMode = scopeSelect.value || 'full';
             const diarization = document.getElementById('diarizationToggle').checked;
 
+            // Clear previous transcription content if re-transcribing
+            if (transcriptionText.trim()) {
+                console.log('Clearing previous transcription for re-transcription');
+                transcriptionText = '';
+                transcriptionBox.innerHTML = `
+                    <div class="transcription-empty">
+                        <i class="fas fa-microphone"></i>
+                        <div>Transcription will appear here...</div>
+                    </div>
+                `;
+                updateWordCount();
+
+                // Hide translation and summary sections
+                translationSection.classList.add('hidden');
+                const summarySection = document.getElementById('summarySection');
+                if (summarySection) {
+                    summarySection.classList.add('hidden');
+                }
+            }
+
+            // Reset progress panels to show fresh progress
+            resetProgressPanels();
+
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${protocol}//${window.location.host}/ws/transcribe`);
 
@@ -1463,7 +1558,7 @@
                 }
 
                 ws.send(JSON.stringify({ url, language, model, captureMode, diarization }));
-                
+
                 startBtn.classList.add('hidden');
                 stopBtn.classList.remove('hidden');
                 urlInput.disabled = true;
@@ -1521,6 +1616,23 @@
                             notificationDiv.firstElementChild?.remove();
                         }, 5000);
                     }
+                } else if (data.type === 'pre_transcript_available') {
+                    // Handle pre-existing transcript from osimhistoria
+                    // NOTE: Transcript and summary are now displayed immediately in renderVideoInfo()
+                    // This handler is kept for marking stages and updating status
+                    console.log('Pre-existing transcript available:', data.transcript?.length, 'chars');
+                    updateStatus('idle', data.message || 'Pre-existing transcript available');
+
+                    // Mark stages 1-3 as completed (extraction done)
+                    showStageIndicator();
+                    updateStage(1, 'completed');
+                    updateStage(2, 'completed');
+                    updateStage(3, 'completed');
+
+                    // Enable start button (ready for re-transcription if user wants)
+                    startBtn.disabled = false;
+                    // NOTE: Don't hide stop button here - let stopTranscription() handle it
+                    // This prevents hiding stop button during active transcription
                 } else if (data.type === 'transcription_chunk') {
                     // Handle incremental transcription chunks
                     addTranscription(data.text);

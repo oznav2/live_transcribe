@@ -633,7 +633,8 @@
         .video-thumbnail img {
             width: 100%;
             height: 100%;
-            object-fit: cover;
+            object-fit: contain; /* Show full image proportionally without cropping */
+            background: #1a1a1a; /* Background for letterboxing if needed */
         }
 
         .video-details {
@@ -796,15 +797,17 @@
             border-radius: 8px;
             padding: 20px;
             min-height: 200px;
-            max-height: 450px;
-            overflow-y: auto;
+            max-height: none; /* Allow container to expand as needed */
+            height: auto; /* Auto-expand based on content */
+            overflow-y: visible; /* No scrollbar needed with auto-expand */
             font-family: 'Arial', 'Helvetica', sans-serif;
-            font-size: 13px;
+            font-size: 14px;
             line-height: 1.8;
             color: #e0e0e0 !important;
             direction: rtl;
             text-align: right;
             white-space: pre-wrap;
+            word-wrap: break-word;
         }
 
         .summary-content:empty::before {

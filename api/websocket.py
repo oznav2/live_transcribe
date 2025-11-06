@@ -30,7 +30,8 @@ from services.transcription import (
     transcribe_with_deepgram
 )
 from services.diarization import transcribe_with_diarization
-from utils.validators import should_use_ytdlp, sanitize_url
+from utils.validators import should_use_ytdlp, sanitize_url, requires_audio_extraction
+from utils.audio_extractor import extract_audio_url
 from utils.cleantext import clean_transcription_text
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,55 @@ async def websocket_transcribe(websocket: WebSocket):
         if not url:
             await websocket.send_json({"error": "URL is required"})
             return
+
+        # Check if URL requires special audio extraction (103fm, osimhistoria)
+        if requires_audio_extraction(url):
+            from urllib.parse import urlparse
+            domain = urlparse(url).hostname or "site"
+
+            await websocket.send_json({
+                "type": "status",
+                "message": f"🔍 Extracting audio from {domain}..."
+            })
+
+            try:
+                result = extract_audio_url(url)
+                if result.ok and result.audio_url:
+                    logger.info(f"✓ Extracted audio URL from {domain}: {result.audio_url}")
+                    await websocket.send_json({
+                        "type": "status",
+                        "message": f"✓ Audio extracted from {domain}"
+                    })
+
+                    # Check if osimhistoria has pre-existing transcript
+                    if "osimhistoria.com" in domain.lower() and result.extra.get("transcript"):
+                        pre_transcript = result.extra.get("transcript", "")
+                        pre_summary = result.extra.get("summary", "")
+
+                        if pre_transcript:
+                            logger.info(f"✓ Found pre-existing transcript ({len(pre_transcript)} chars)")
+                            await websocket.send_json({
+                                "type": "pre_transcript_available",
+                                "transcript": pre_transcript,
+                                "summary": pre_summary,
+                                "message": "📄 Episode transcript extracted from page"
+                            })
+
+                    # Replace URL with direct MP3 URL for download
+                    url = result.audio_url
+                else:
+                    error_msgs = ', '.join(result.errors.values()) if result.errors else "Unknown error"
+                    logger.error(f"✗ Failed to extract audio from {domain}: {error_msgs}")
+                    await websocket.send_json({
+                        "error": f"Could not extract audio from {domain}: {error_msgs}"
+                    })
+                    return
+            except Exception as e:
+                logger.error(f"✗ Audio extraction failed for {domain}: {e}", exc_info=True)
+                await websocket.send_json({
+                    "error": f"Audio extraction failed: {str(e)}"
+                })
+                return
 
         logger.info(f"Starting transcription for URL: {url} with model: {model_name}")
 

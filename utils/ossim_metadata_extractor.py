@@ -1,38 +1,51 @@
 #!/usr/bin/env python3
 """
-Improved extractor for osimhistoria page.
+Improved extractor for osimhistoria episode pages.
 
-- Episode number + title from:
+Extracts:
+- episode_number.txt
+- title.txt
+- summary.txt
+- episode_date.txt
+- episode_length.txt
+- transcript.txt
+
+All saved into: cache/metadata/
+
+Selectors (from the real page):
+- Title + episode number:
     #comp-lei4z7va > div > div
-  Example text: "454: התשתית של הקפיטליזם - על הנהלת חשבונות כפולה"
-  -> episode_number = "454"
-  -> title = "התשתית של הקפיטליזם - על הנהלת חשבונות כפולה"
+    e.g. "454: התשתית של הקפיטליזם - על הנהלת חשבונות כפולה"
 
-- Summary from:
+- Summary:
     #comp-kf53u3eb > p > span > span > span
 
-- Transcript from:
-    #comp-kf53xx1z
-  paragraphs in page order, separated by a blank line
+- Date:
+    #comp-lda48wxn > p > span > span
+    e.g. "19.10.25"
 
-Outputs to cache/metadata/*.txt
+- Audio length (Wix player):
+    [data-hook="timeStamp"]
+    e.g. "00:00 / 01:04"
+
+- Transcript:
+    #comp-kf53xx1z
 """
 
 import argparse
 import logging
-import os
 import re
 import sys
 from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup, Tag, NavigableString
+from bs4 import BeautifulSoup, Tag
 
 # ---- config ----
 DEFAULT_LOCAL_FILE = "/mnt/data/ossim.html"
 OUTPUT_DIR = Path("cache/metadata")
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; ossim-extractor/1.1)"
+    "User-Agent": "Mozilla/5.0 (compatible; ossim-extractor/1.2)"
 }
 REQUEST_TIMEOUT = 12
 # -----------------
@@ -70,55 +83,121 @@ def soup_from_html(html: str) -> BeautifulSoup:
 
 def extract_episode_title_and_number(soup: BeautifulSoup):
     """
-    Target the exact container:
-        #comp-lei4z7va > div > div
-    Text format:
-        "<number>: <title>"
-    We return (title, number) where number may be "" if not found.
+    From: #comp-lei4z7va > div > div
+    e.g. "454: התשתית של הקפיטליזם - על הנהלת חשבונות כפולה"
     """
-    title_sel = soup.select_one("#comp-lei4z7va > div > div")
-    if not title_sel:
+    node = soup.select_one("#comp-lei4z7va > div > div")
+    if not node:
         logging.warning("Episode title container (#comp-lei4z7va > div > div) not found.")
         return "", ""
-
-    full_text = title_sel.get_text(separator=" ", strip=True)
+    full_text = node.get_text(separator=" ", strip=True)
     if not full_text:
         return "", ""
-
-    # Split only on FIRST colon
     if ":" in full_text:
         ep_num, _, ep_title = full_text.partition(":")
-        ep_num = ep_num.strip()
-        ep_title = ep_title.strip()
-        return ep_title, ep_num
-    else:
-        # no colon: treat whole thing as title
-        return full_text.strip(), ""
+        return ep_title.strip(), ep_num.strip()
+    return full_text.strip(), ""
+
 
 def extract_summary(soup: BeautifulSoup):
     """
-    Target:
-        #comp-kf53u3eb > p > span > span > span
-    If missing/empty, fallback to older heuristic.
+    From: #comp-kf53u3eb > p > span > span > span
     """
     node = soup.select_one("#comp-kf53u3eb > p > span > span > span")
     if node:
-        text = node.get_text(separator=" ", strip=True)
-        if text:
-            return text
+        txt = node.get_text(separator=" ", strip=True)
+        if txt:
+            return txt
 
-    # fallback: previous heuristic
+    # fallback to previous heuristic if needed
     spans = soup.find_all("span", class_="wixui-rich-text__text")
     for sp in spans:
-        text = sp.get_text(separator=" ", strip=True)
-        # pick a mid-length span not in transcript
         parent_div = sp.find_parent(id="comp-kf53xx1z")
         if parent_div:
             continue
+        text = sp.get_text(separator=" ", strip=True)
         if 20 < len(text) < 2000:
             return text
 
     return ""
+
+
+def extract_episode_date(soup: BeautifulSoup):
+    """
+    From: #comp-lda48wxn > p > span > span
+    Example: "19.10.25"
+    """
+    node = soup.select_one("#comp-lda48wxn > p > span > span")
+    if not node:
+        logging.warning("Episode date node (#comp-lda48wxn > p > span > span) not found.")
+        return ""
+    text = node.get_text(separator=" ", strip=True)
+    return text
+
+
+def parse_duration_string(raw: str):
+    """
+    raw is something like "00:00 / 01:04"
+    We want the right-hand side, e.g. "01:04".
+    Then parse as hh:mm:ss or mm:ss.
+    Return total_seconds (int) or None.
+    """
+    if not raw:
+        return None
+    # common format: "00:00 / 01:04"
+    if "/" in raw:
+        right = raw.split("/", 1)[1].strip()
+    else:
+        right = raw.strip()
+
+    # try hh:mm:ss
+    m = re.match(r"^(\d{1,2}):(\d{2}):(\d{2})$", right)
+    if m:
+        h, mi, s = map(int, m.groups())
+        return h * 3600 + mi * 60 + s
+
+    # try mm:ss
+    m = re.match(r"^(\d{1,2}):(\d{2})$", right)
+    if m:
+        mi, s = map(int, m.groups())
+        return mi * 60 + s
+
+    return None
+
+
+def humanize_minutes(total_seconds: int) -> str:
+    """
+    Convert seconds to the string format requested:
+    - if < 60 minutes -> "X minutes"
+    - if >= 60 minutes -> "H hour[s] and M minutes" (omit 'and M minutes' if M == 0)
+    """
+    total_minutes = total_seconds // 60
+    if total_minutes < 60:
+        return f"{total_minutes} minutes"
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    hour_word = "hour" if hours == 1 else "hours"
+    if minutes == 0:
+        return f"{hours} {hour_word}"
+    return f"{hours} {hour_word} and {minutes} minutes"
+
+
+def extract_episode_length(soup: BeautifulSoup):
+    """
+    From the Wix player span:
+        [data-hook="timeStamp"]
+    e.g. "00:00 / 01:04"
+    """
+    node = soup.find(attrs={"data-hook": "timeStamp"})
+    if not node:
+        logging.warning('Episode length node ([data-hook="timeStamp"]) not found.')
+        return ""
+    raw = node.get_text(" ", strip=True)
+    total_seconds = parse_duration_string(raw)
+    if total_seconds is None:
+        logging.warning(f"Could not parse duration from: {raw!r}")
+        return ""
+    return humanize_minutes(total_seconds)
 
 
 def clean_paragraph_text(s: str) -> str:
@@ -133,7 +212,6 @@ def clean_paragraph_text(s: str) -> str:
 def extract_transcript_paragraphs(soup: BeautifulSoup):
     """
     Read from div#comp-kf53xx1z in DOM order.
-    Keep h1-h6, p, li, blockquote, div textual blocks.
     """
     root = soup.find(id="comp-kf53xx1z")
     if not root:
@@ -153,7 +231,6 @@ def extract_transcript_paragraphs(soup: BeautifulSoup):
                     if cleaned and (not paragraphs or paragraphs[-1] != cleaned):
                         paragraphs.append(cleaned)
 
-    # remove empties
     paragraphs = [p for p in paragraphs if p.strip()]
     logging.info(f"Extracted {len(paragraphs)} transcript paragraphs")
     return paragraphs
@@ -169,39 +246,41 @@ def write_text(path: Path, content: str):
 def process_html(html: str):
     soup = soup_from_html(html)
 
-    # 1) episode title + number
+    # title + ep number
     title, ep_num = extract_episode_title_and_number(soup)
-    logging.info(f"Episode title: {title!r}")
-    logging.info(f"Episode number: {ep_num!r}")
-
-    # 2) summary
+    # summary
     summary = extract_summary(soup)
-    logging.info(f"Summary length: {len(summary)}")
-
-    # 3) transcript
+    # date
+    episode_date = extract_episode_date(soup)
+    # length
+    episode_length = extract_episode_length(soup)
+    # transcript
     transcript_paragraphs = extract_transcript_paragraphs(soup)
     transcript_text = "\n\n".join(transcript_paragraphs)
 
-    # 4) write
     ensure_output_dir()
     write_text(OUTPUT_DIR / "title.txt", title)
     write_text(OUTPUT_DIR / "episode_number.txt", ep_num)
     write_text(OUTPUT_DIR / "summary.txt", summary)
+    write_text(OUTPUT_DIR / "episode_date.txt", episode_date)
+    write_text(OUTPUT_DIR / "episode_length.txt", episode_length)
     write_text(OUTPUT_DIR / "transcript.txt", transcript_text)
 
     return {
         "title": title,
         "episode_number": ep_num,
-        "summary_length": len(summary),
+        "summary_len": len(summary),
+        "episode_date": episode_date,
+        "episode_length": episode_length,
         "transcript_paragraphs": len(transcript_paragraphs),
     }
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--url", "-u", help="URL to fetch")
-    parser.add_argument("--file", "-f", help="Local HTML file to read")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Extract Osim Historia episode metadata")
+    ap.add_argument("--url", "-u", help="Episode URL to fetch")
+    ap.add_argument("--file", "-f", help="Local HTML file to read")
+    args = ap.parse_args()
 
     html = None
     last_err = None
@@ -221,13 +300,12 @@ def main():
             last_err = e
 
     if html is None:
-        # fallbacks: try sample, then local default
+        # final fallback to uploaded file
         try:
             html = read_local_html(DEFAULT_LOCAL_FILE)
-            logging.info(f"Using local fallback: {DEFAULT_LOCAL_FILE}")
+            logging.info(f"Using local fallback {DEFAULT_LOCAL_FILE}")
         except Exception as e:
-            logging.error("Could not obtain HTML at all.")
-            raise RuntimeError("No HTML source available") from (last_err or e)
+            raise RuntimeError("Could not load any HTML source") from (last_err or e)
 
     result = process_html(html)
     logging.info("Done:")

@@ -258,8 +258,8 @@
         "yt-dlp"
       ],
       "timestamp": "2025-10-27T22:54:53.294Z",
-      "accessCount": 0,
-      "lastAccessed": "2025-10-27T22:54:53.294Z",
+      "accessCount": 1,
+      "lastAccessed": "2025-11-06T09:34:11.027Z",
       "lastVerified": "2025-10-27T22:54:53.294Z",
       "status": "fresh"
     },
@@ -293,8 +293,8 @@
         "websockets"
       ],
       "timestamp": "2025-10-27T22:59:54.641Z",
-      "accessCount": 0,
-      "lastAccessed": "2025-10-27T22:59:54.641Z",
+      "accessCount": 1,
+      "lastAccessed": "2025-11-06T09:34:11.027Z",
       "lastVerified": "2025-10-27T22:59:54.641Z",
       "status": "fresh"
     },
@@ -494,8 +494,8 @@
         "live-transcription"
       ],
       "timestamp": "2025-10-28T08:29:00.579Z",
-      "accessCount": 0,
-      "lastAccessed": "2025-10-28T08:29:00.579Z",
+      "accessCount": 1,
+      "lastAccessed": "2025-11-06T09:34:11.027Z",
       "lastVerified": "2025-10-28T08:29:00.579Z",
       "status": "fresh"
     },
@@ -728,8 +728,8 @@
         "event-handler"
       ],
       "timestamp": "2025-10-29T07:39:30.826Z",
-      "accessCount": 0,
-      "lastAccessed": "2025-10-29T07:39:30.826Z",
+      "accessCount": 1,
+      "lastAccessed": "2025-11-06T09:34:11.027Z",
       "lastVerified": "2025-10-29T07:39:30.826Z",
       "status": "fresh"
     },
@@ -762,8 +762,8 @@
         "threading"
       ],
       "timestamp": "2025-10-29T07:53:54.544Z",
-      "accessCount": 0,
-      "lastAccessed": "2025-10-29T07:53:54.544Z",
+      "accessCount": 1,
+      "lastAccessed": "2025-11-06T09:34:11.027Z",
       "lastVerified": "2025-10-29T07:53:54.544Z",
       "status": "fresh"
     },
@@ -1384,8 +1384,8 @@
       ],
       "timestamp": "2025-10-29T23:04:35.298Z",
       "context": "Improved error messaging and user feedback throughout app.py",
-      "accessCount": 1,
-      "lastAccessed": "2025-10-30T11:09:19.868Z",
+      "accessCount": 2,
+      "lastAccessed": "2025-11-06T09:34:11.027Z",
       "lastVerified": "2025-10-29T23:04:35.298Z",
       "status": "fresh"
     },
@@ -1502,8 +1502,8 @@
       ],
       "timestamp": "2025-10-30T11:28:30.626Z",
       "context": "Final validated plan for progress tracking after thorough investigation",
-      "accessCount": 0,
-      "lastAccessed": "2025-10-30T11:28:30.626Z",
+      "accessCount": 1,
+      "lastAccessed": "2025-11-06T09:34:11.027Z",
       "lastVerified": "2025-10-30T11:28:30.626Z",
       "status": "fresh"
     },
@@ -1522,8 +1522,8 @@
       ],
       "timestamp": "2025-10-30T11:31:26.594Z",
       "context": "Final implementation of safe progress tracking after thorough reflection and testing",
-      "accessCount": 0,
-      "lastAccessed": "2025-10-30T11:31:26.594Z",
+      "accessCount": 1,
+      "lastAccessed": "2025-11-06T09:34:11.027Z",
       "lastVerified": "2025-10-30T11:31:26.594Z",
       "status": "fresh"
     },
@@ -1727,8 +1727,8 @@
         "language-detection"
       ],
       "timestamp": "2025-11-03T21:54:29.955Z",
-      "accessCount": 0,
-      "lastAccessed": "2025-11-03T21:54:29.955Z",
+      "accessCount": 1,
+      "lastAccessed": "2025-11-06T09:34:11.027Z",
       "lastVerified": "2025-11-03T21:54:29.955Z",
       "status": "fresh"
     },
@@ -1799,7 +1799,64 @@
       "lastAccessed": "2025-11-05T14:18:36.129Z",
       "lastVerified": "2025-11-05T14:18:36.129Z",
       "status": "fresh"
+    },
+    {
+      "id": "mem_1762420179819_oggxrl9em",
+      "content": "Task: Compare YouTube URL flow vs extracted audio URL flow to identify missing UI feedback. Need to find where video metadata, download progress, transcription progress are shown, and what makes summary/translate buttons visible.",
+      "type": "general",
+      "tags": [
+        "general",
+        "investigation",
+        "ui-feedback",
+        "youtube-flow",
+        "audio-flow"
+      ],
+      "timestamp": "2025-11-06T09:09:39.818Z",
+      "accessCount": 0,
+      "lastAccessed": "2025-11-06T09:09:39.818Z",
+      "lastVerified": "2025-11-06T09:09:39.818Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1762420212079_wqe3x3fd4",
+      "content": "Key findings:\n1. YouTube flow: Fetches metadata (title, thumbnail, views) via /api/video-info endpoint\n2. Download progress shown via \"download_progress\" messages (type: download_progress)\n3. Transcription progress shown via \"transcription_progress\" messages\n4. Summary/Translate buttons become visible when \"complete\" message is received AND transcriptionText is not empty\n5. showTranslateButton() function at line 709 checks if language detected and text exists\n6. Extracted audio URLs (103fm/osimhistoria) go through should_use_ytdlp() and use download_with_fallback()\n7. No video metadata extraction happens for non-YouTube URLs",
+      "type": "code",
+      "tags": [
+        "code",
+        "go",
+        "api",
+        "findings",
+        "youtube-flow",
+        "audio-flow",
+        "ui-feedback"
+      ],
+      "timestamp": "2025-11-06T09:10:12.079Z",
+      "accessCount": 1,
+      "lastAccessed": "2025-11-06T09:34:11.027Z",
+      "lastVerified": "2025-11-06T09:10:12.079Z",
+      "status": "fresh"
+    },
+    {
+      "id": "mem_1762421705709_ppmdsqhez",
+      "content": "UI Metadata Display Research Complete:\n\nFRONTEND WEBSOCKET MESSAGE HANDLERS (index.html):\n1. Main WS handler: Lines 1475-1613 for URL flow, Lines 1322-1413 for uploaded file flow\n2. Message types processed:\n   - \"status\": Update status bar (lines 1478-1485, 1325-1332)\n   - \"download_progress\": Show download progress bar (lines 1486-1489)\n   - \"cached_file\": Show cache hit notification (lines 1490-1523)\n   - \"transcription_chunk\": Display incremental text (lines 1524-1540)\n   - \"transcription_progress\": Update progress bar (lines 1541-1554)\n   - \"transcription_status\": Show indeterminate progress (lines 1555-1558)\n   - \"transcription_preview\": Live preview in progress panel (lines 1559-1561)\n   - \"transcription\": Legacy single chunk handler (lines 1562-1572)\n   - \"complete\": Finish transcription, enable buttons (lines 1579-1606)\n   - \"error\": Show error message (lines 1607-1611)\n\nVIDEO METADATA DISPLAY (Lines 92-137):\n- Section: videoInfoSection (hidden by default)\n- Components: thumbnail (line 102), title (line 107), channel (line 112), duration (line 116), views (line 120)\n- Loaded via /api/video-info endpoint when YouTube URL detected (lines 980-1011)\n- Rendered by renderVideoInfo() function (lines 1013-1044)\n- NO \"video_metadata\" message type exists in current websocket flow\n\nPROGRESS BARS:\n- Download: Lines 272-301, triggered by \"download_progress\" message (line 1486)\n- Transcription: Lines 304-334, triggered by \"transcription_progress\" message (line 1541)\n- Translation: Lines 337-358, separate websocket connection (line 754)\n\nBUTTON VISIBILITY LOGIC:\n- Translate button: Hidden by default (line 244), shown when \"complete\" message received with detected_language (lines 1589-1600, function at 709-715)\n- Summarize button: Shown at same time as translate button (line 713)\n- Required field: detected_language in \"complete\" message (lines 1589, 1392)\n\nCURRENT WEBSOCKET MESSAGE FLOW FOR YOUTUBE:\n1. status: \"Connecting to stream...\" (websocket.py:379)\n2. download_progress: Multiple updates during download (audio_processor.py:159)\n3. cached_file: If already downloaded (audio_processor.py:48)\n4. status: \"Transcribing downloaded audio...\" (websocket.py:475)\n5. transcription_progress: Multiple updates (services/transcription.py)\n6. transcription_chunk: Incremental text chunks\n7. complete: Final message with detected_language + url (websocket.py:483-487)\n\nCACHE STRUCTURE:\n- Download cache dir: cache/downloads/ (constants.py:7)\n- Cache key generation: SHA256 hash of URL, first 16 chars (cache.py:46-47)\n- Cache filename format: {url_hash}_{timestamp}.wav (cache.py:80)\n- In-memory mapping: URL_DOWNLOADS dict maps url_hash → file_path (cache.py:55-62)\n- Cache lookup: get_cached_download(url) checks memory first, then disk (cache.py:50-72)\n\nKEY INSIGHT: There is NO \"video_metadata\" websocket message type. Video metadata is fetched via REST API /api/video-info when URL changes, NOT during transcription flow.",
+      "type": "code",
+      "tags": [
+        "code",
+        "api",
+        "ui",
+        "research",
+        "websocket",
+        "metadata",
+        "cache",
+        "osimhistoria"
+      ],
+      "timestamp": "2025-11-06T09:35:05.709Z",
+      "context": "Research findings for osimhistoria metadata integration",
+      "accessCount": 0,
+      "lastAccessed": "2025-11-06T09:35:05.709Z",
+      "lastVerified": "2025-11-06T09:35:05.709Z",
+      "status": "fresh"
     }
   ],
-  "lastUpdated": "2025-11-05T14:18:36.129Z"
+  "lastUpdated": "2025-11-06T09:35:05.709Z"
 }

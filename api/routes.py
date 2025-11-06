@@ -73,36 +73,125 @@ async def health_check():
 @router.post("/api/video-info")
 async def get_video_info(request: VideoInfoRequest):
     """
-    Fetch YouTube video metadata
-    
+    Fetch video metadata from YouTube, osimhistoria, or 103fm URLs
+
     Returns JSON with video information or error
     """
     try:
         url = str(request.url)
-        
+
         # Validate URL format
         if not url.startswith(('http://', 'https://')):
             return {
                 "success": False,
                 "error": "Invalid URL format"
             }
-        
-        # Check if it's a YouTube URL
+
+        url_lower = url.lower()
+
+        # Handle osimhistoria URLs
+        if "osimhistoria.com" in url_lower:
+            try:
+                from services.osimhistoria_metadata import extract_metadata
+                metadata = extract_metadata(url, use_cache=True)
+
+                # Format display with proper Hebrew text and line breaks
+                # Episode number: "פרק 452"
+                # Date: "תאריך: 15.9.25"
+                episode_line = f"פרק {metadata.get('episode_number', '')}" if metadata.get('episode_number') else ""
+                date_line = f"תאריך: {metadata.get('episode_date', '')}" if metadata.get('episode_date') else ""
+
+                # Combine with line break for display
+                view_count_display = episode_line
+                if date_line:
+                    view_count_display += f" • {date_line}" if episode_line else date_line
+
+                return {
+                    "success": True,
+                    "data": {
+                        "title": metadata.get("title", "Osim Historia Episode"),
+                        "channel": "Osim Historia",
+                        "duration_formatted": "...",  # Will be updated after audio download
+                        "thumbnail": metadata.get("thumbnail", "static/osim.png"),
+                        "view_count_formatted": view_count_display,
+                        "is_youtube": False,
+                        "is_osimhistoria": True,
+                        # Additional osimhistoria-specific fields
+                        "episode_number": metadata.get("episode_number", ""),
+                        "episode_date": metadata.get("episode_date", ""),
+                        "pre_transcript": metadata.get("transcript", ""),
+                        "pre_summary": metadata.get("summary", "")
+                    }
+                }
+            except Exception as e:
+                logger.error(f"Failed to extract osimhistoria metadata: {e}", exc_info=True)
+                return {
+                    "success": False,
+                    "error": f"Failed to extract episode information: {str(e)}"
+                }
+
+        # Handle 103fm URLs
+        if "103fm.maariv.co.il" in url_lower:
+            try:
+                from utils.audio_extractor import extract_audio_url
+                result = extract_audio_url(url)
+
+                if result.ok and result.title:
+                    return {
+                        "success": True,
+                        "data": {
+                            "title": result.title,
+                            "channel": "103FM",
+                            "duration_formatted": result.duration or "Unknown",
+                            "thumbnail": "static/103.png",
+                            "view_count_formatted": "",
+                            "is_youtube": False,
+                            "is_103fm": True
+                        }
+                    }
+                else:
+                    # Return minimal info if extraction fails
+                    return {
+                        "success": True,
+                        "data": {
+                            "title": "103FM Episode",
+                            "channel": "103FM",
+                            "duration_formatted": "Unknown",
+                            "thumbnail": "",
+                            "view_count_formatted": "",
+                            "is_youtube": False,
+                            "is_103fm": True
+                        }
+                    }
+            except Exception as e:
+                logger.warning(f"Failed to extract 103fm metadata: {e}")
+                # Return minimal info on error
+                return {
+                    "success": True,
+                    "data": {
+                        "title": "103FM Episode",
+                        "channel": "103FM",
+                        "is_youtube": False,
+                        "is_103fm": True
+                    }
+                }
+
+        # Handle YouTube URLs
         if not is_youtube_url(url):
             return {
                 "success": False,
-                "error": "Not a YouTube URL"
+                "error": "URL is not from a supported platform (YouTube, osimhistoria, 103fm)"
             }
-        
-        # Extract metadata
+
+        # Extract YouTube metadata
         metadata = await get_youtube_metadata(url)
-        
+
         if metadata is None:
             return {
                 "success": False,
                 "error": "Failed to fetch video information"
             }
-        
+
         # Format the response
         return {
             "success": True,
@@ -117,7 +206,7 @@ async def get_video_info(request: VideoInfoRequest):
                 "is_youtube": metadata['is_youtube']
             }
         }
-        
+
     except Exception as e:
         logger.error(f"Error in video info endpoint: {e}", exc_info=True)
         return {
