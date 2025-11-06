@@ -74,6 +74,10 @@ context_generator_prompt.md
 context_generator_usage.md
 memory_log_prompt.md
 project_summary.md.bak
+memories.json
+ossim_1_output.mp3
+ossim_metadata_extractor.py
+audio_extract_helper.py
 
 # Per request: ignore .gitignore itself (note: has no effect if already tracked)
 .gitignore
